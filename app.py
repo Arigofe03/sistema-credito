@@ -10,7 +10,7 @@ import plotly.express as px
 st.set_page_config(page_title="Sistema de Gestão - Cred", layout="wide")
 
 # --- CONEXÃO COM O BANCO DE DADOS NEON ---
-DATABASE_URL = "postgresql://neondb_owner:npg_cz2D6buqdpxY@ep-rough-flower-an2uo3d2-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+DATABASE_URL = st.secrets["DB_URL"]
 
 def conectar_banco():
     return psycopg2.connect(DATABASE_URL)
