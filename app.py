@@ -49,7 +49,6 @@ def obter_lista_maquinas():
         conn.close()
         maquinas_db = [r[0] for r in resultados]
         
-        # Garante que as originais sempre apareçam mesmo se o banco estiver vazio
         padroes = ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"]
         todas = list(set(padroes + maquinas_db))
         todas.sort()
@@ -64,9 +63,7 @@ def inicializar_banco():
         cursor = conn.cursor()
         cursor.execute("CREATE TABLE IF NOT EXISTS contas_pix (id SERIAL PRIMARY KEY, nome_conta VARCHAR(50) UNIQUE NOT NULL);")
         cursor.execute("ALTER TABLE contas_pix ADD COLUMN IF NOT EXISTS saldo_inicial NUMERIC(15,2) DEFAULT 0.0;")
-        
         cursor.execute("CREATE TABLE IF NOT EXISTS entradas_pix (id SERIAL PRIMARY KEY, conta_nome VARCHAR(50) NOT NULL, data_entrada DATE, valor NUMERIC(15,2), descricao TEXT);")
-        
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS taxas_cartoes_v2 (
                 id SERIAL PRIMARY KEY,
@@ -77,23 +74,19 @@ def inicializar_banco():
                 UNIQUE(nome_maquina, bandeira, parcelas)
             );
         """)
-        
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'Pendente';")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS motivo_recusa TEXT;")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS bandeira_cartao VARCHAR(50) DEFAULT 'Não Informada';")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS chave_pix_cliente VARCHAR(100) DEFAULT 'Não Informada';")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS detalhes_cartoes TEXT;")
-        
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS fechado_por VARCHAR(100);")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS data_fechamento TIMESTAMP;")
-        
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS salario NUMERIC(15,2);")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS data_inicio DATE;")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS data_fim DATE;")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS endereco TEXT;")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rg VARCHAR(20);")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS cpf VARCHAR(20);")
-        
         cursor.execute("UPDATE vendas SET status = 'Fechada' WHERE total_lucro IS NOT NULL AND status IS NULL;")
         cursor.execute("UPDATE vendas SET status = 'Pendente' WHERE total_lucro IS NULL AND status IS NULL;")
         conn.commit()
@@ -111,7 +104,6 @@ def gerar_pdf(df):
     titulo = 'Relatório Completo de Vendas'.encode('latin-1', 'replace').decode('latin-1')
     pdf.cell(0, 10, titulo, ln=True, align='C')
     pdf.ln(5)
-    
     pdf.set_font('Arial', 'B', 6)
     colunas = list(df.columns)
     larguras = [8, 15, 15, 20, 25, 20, 25, 15, 15, 18, 18, 18, 18, 15, 20, 25] 
@@ -120,7 +112,6 @@ def gerar_pdf(df):
             texto_col = str(col).encode('latin-1', 'replace').decode('latin-1')
             pdf.cell(larguras[i], 8, texto_col, border=1, align='C')
     pdf.ln()
-    
     pdf.set_font('Arial', '', 6)
     for index, row in df.iterrows():
         for i, val in enumerate(row):
@@ -390,7 +381,7 @@ else:
                         st.info("Nenhuma movimentação financeira encontrada neste período.")
                 except Exception as e: pass
 
-        # --- FECHAMENTO ---
+        # --- FECHAMENTO (COM INTELIGÊNCIA DE MAPEAMENTO DE BANDEIRAS) ---
         with aba_fecha:
             try:
                 conn = conectar_banco()
@@ -432,20 +423,49 @@ else:
                         cartoes_usados = json.loads(detalhes_json)
                         resumo_html += "**Desconto das Taxas Individuais:**\n"
                         for c in cartoes_usados:
-                            cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = %s AND parcelas = %s", (c['Máquina'], c['Bandeira'], c['Parcelas']))
+                            maq_c = c['Máquina']
+                            band_c = c['Bandeira']
+                            parc_c = c['Parcelas']
+                            val_c = float(c['Valor'])
+                            
+                            # Tentativa 1: Busca a taxa exata na base
+                            cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = %s AND parcelas = %s", (maq_c, band_c, parc_c))
                             res = cursor.fetchone()
+                            
+                            # Tentativa 2: Fallback (Mapeamento Inteligente para os Grupos da Tabela)
+                            if not res:
+                                if band_c in ["Visa", "Mastercard"]:
+                                    cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = 'Visa/Mastercard' AND parcelas = %s", (maq_c, parc_c))
+                                    res = cursor.fetchone()
+                                elif band_c in ["Elo", "Hipercard", "American Express", "Outra"]:
+                                    cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = 'Elo/Hiper/Demais' AND parcelas = %s", (maq_c, parc_c))
+                                    res = cursor.fetchone()
+                            
                             t_perc = float(res[0]) if res else 0.0
-                            t_val = float(c['Valor']) * (t_perc / 100)
+                            t_val = val_c * (t_perc / 100)
                             total_taxa += t_val
+                            
                             if t_perc == 0.0:
-                                st.warning(f"⚠️ Atenção: Não existe taxa cadastrada para **{c['Máquina']} + {c['Bandeira']} + {c['Parcelas']}**. Assumimos taxa zero.")
-                            resumo_html += f"- {c['Máquina']} ({c['Bandeira']}) em {c['Parcelas']} - {formatar_moeda(c['Valor'])}: Taxa de {t_perc}% = **- {formatar_moeda(t_val)}**\n"
+                                st.warning(f"⚠️ Atenção: Não existe taxa cadastrada no sistema para **{maq_c} + {band_c} + {parc_c}**. Assumimos taxa zero.")
+                            resumo_html += f"- {maq_c} ({band_c}) em {parc_c} - {formatar_moeda(val_c)}: Taxa de {t_perc}% = **- {formatar_moeda(t_val)}**\n"
                     else:
                         maq_alvo = venda_dados['Máquina']
                         bandeira_alvo = venda_dados['Bandeira']
                         parc_alvo = venda_dados['Parcelas']
+                        
+                        # Tentativa 1 (Venda Antiga Simples)
                         cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = %s AND parcelas = %s", (maq_alvo, bandeira_alvo, parc_alvo))
                         taxa_resultado = cursor.fetchone()
+                        
+                        # Tentativa 2: Fallback
+                        if not taxa_resultado:
+                            if bandeira_alvo in ["Visa", "Mastercard"]:
+                                cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = 'Visa/Mastercard' AND parcelas = %s", (maq_alvo, parc_alvo))
+                                taxa_resultado = cursor.fetchone()
+                            elif bandeira_alvo in ["Elo", "Hipercard", "American Express", "Outra"]:
+                                cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = 'Elo/Hiper/Demais' AND parcelas = %s", (maq_alvo, parc_alvo))
+                                taxa_resultado = cursor.fetchone()
+                                
                         t_perc = float(taxa_resultado[0]) if taxa_resultado else 0.0
                         total_taxa = venda_raw * (t_perc / 100)
                         if t_perc == 0.0:
@@ -896,7 +916,6 @@ else:
                 st.write("#### Lançamento de Cartões")
                 cartoes_inputs = []
                 
-                # O menu de máquinas da atendente agora lê do banco!
                 lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas()
                 
                 for i in range(int(qtd_cartoes)):
