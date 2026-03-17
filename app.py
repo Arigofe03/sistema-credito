@@ -22,13 +22,22 @@ def formatar_moeda(valor):
         return "R$ 0,00"
     return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+# --- FUNÇÃO DE CÁLCULO DE BÔNUS FIDELIDADE ---
+def calcular_bonus(valor):
+    if valor < 500:
+        return 0.0
+    elif valor < 1000:
+        return 15.0
+    else:
+        milhares = int(valor // 1000)
+        return 20.0 + ((milhares - 1) * 10.0)
+
 # --- LISTAS PADRÕES DO SISTEMA ---
 LISTA_LOJAS = ["Berimbau", "Centro", "Sussuarana", "Irará", "Liberdade", "Iapi"]
 LISTA_PARCELAS = ["Débito", "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", "9x", "10x", "11x", "12x", "13x", "14x", "15x", "16x", "17x", "18x"]
 LISTA_BANDEIRAS_ATENDENTE = ["Selecione...", "Visa/Mastercard", "Elo/Hiper/Demais", "Visa", "Mastercard", "Elo", "Hipercard", "American Express", "Outra"]
 LISTA_BANDEIRAS_ADMIN = ["Visa/Mastercard", "Elo/Hiper/Demais", "Visa", "Mastercard", "Elo", "Hipercard", "American Express", "Outra"]
 
-# A MATRIZ DE TAXAS PADRÃO
 DADOS_TAXAS_PADRAO = [
     ("Débito", 0.99, 1.60), ("1x", 2.99, 3.99), ("2x", 4.09, 5.30),
     ("3x", 4.78, 5.99), ("4x", 5.47, 6.68), ("5x", 6.14, 7.35),
@@ -79,6 +88,12 @@ def inicializar_banco():
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS bandeira_cartao VARCHAR(50) DEFAULT 'Não Informada';")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS chave_pix_cliente VARCHAR(100) DEFAULT 'Não Informada';")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS detalhes_cartoes TEXT;")
+        cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS detalhes_pagamentos TEXT;")
+        cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS bonus_fidelidade NUMERIC(15,2) DEFAULT 0.0;")
+        
+        # NOVA COLUNA PARA O CARTÃO FIDELIDADE
+        cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS usou_fidelidade BOOLEAN DEFAULT FALSE;")
+        
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS fechado_por VARCHAR(100);")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS data_fechamento TIMESTAMP;")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS salario NUMERIC(15,2);")
@@ -106,7 +121,7 @@ def gerar_pdf(df):
     pdf.ln(5)
     pdf.set_font('Arial', 'B', 6)
     colunas = list(df.columns)
-    larguras = [8, 15, 15, 20, 25, 20, 25, 15, 15, 18, 18, 18, 18, 15, 20, 25] 
+    larguras = [8, 15, 15, 20, 25, 20, 25, 15, 15, 18, 18, 12, 15, 15, 18, 15, 20, 25] 
     for i, col in enumerate(colunas):
         if i < len(larguras):
             texto_col = str(col).encode('latin-1', 'replace').decode('latin-1')
@@ -128,7 +143,7 @@ def gerar_pdf(df):
 def consultar_perfil_cliente(cpf_busca):
     try:
         conn = conectar_banco()
-        query = "SELECT to_char(data_venda, 'DD/MM/YYYY') as \"Data\", loja as \"Loja\", valor_venda as \"Valor\", parcelas as \"Parcelas\", status as \"Status\" FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE v.cliente_cpf = %s ORDER BY v.id DESC"
+        query = "SELECT to_char(v.data_venda, 'DD/MM/YYYY') as \"Data\", u.loja as \"Loja\", v.valor_venda as \"Valor\", v.parcelas as \"Parcelas\", v.status as \"Status\", v.usou_fidelidade FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE v.cliente_cpf = %s ORDER BY v.id DESC"
         df_cliente = pd.read_sql_query(query, conn, params=(cpf_busca,))
         cursor = conn.cursor()
         cursor.execute("SELECT cliente_nome FROM vendas WHERE cliente_cpf = %s ORDER BY id DESC LIMIT 1", (cpf_busca,))
@@ -136,8 +151,16 @@ def consultar_perfil_cliente(cpf_busca):
         nome_cliente = nome_resultado[0] if nome_resultado else "Desconhecido"
         conn.close()
         
+        usou_fid = False
+        if not df_cliente.empty and 'usou_fidelidade' in df_cliente.columns:
+            usou_fid = df_cliente['usou_fidelidade'].any()
+            # Esconde a coluna booleana pra tabela ficar bonita na tela
+            df_cliente_display = df_cliente.drop(columns=['usou_fidelidade'])
+        else:
+            df_cliente_display = df_cliente
+            
         if df_cliente.empty:
-            return None, "Não Encontrado", df_cliente
+            return None, "Não Encontrado", df_cliente_display
             
         total_operacoes = len(df_cliente)
         valor_total = df_cliente['Valor'].sum()
@@ -149,9 +172,14 @@ def consultar_perfil_cliente(cpf_busca):
         elif aprovadas > 1: perfil = "🔄 Cliente Frequente"
         else: perfil = "🆕 Cliente Novo"
             
+        # Adiciona a coroa de Fidelidade se o cliente já usou alguma vez
+        if usou_fid:
+            perfil += " | 👑 Fidelidade"
+            
         resumo = {"Nome": nome_cliente, "Total de Tentativas": total_operacoes, "Operações Aprovadas": aprovadas, "Operações Recusadas": recusadas, "Volume Movimentado": valor_total}
-        df_cliente['Valor'] = df_cliente['Valor'].apply(formatar_moeda)
-        return resumo, perfil, df_cliente
+        df_cliente_display['Valor'] = df_cliente_display['Valor'].apply(formatar_moeda)
+        
+        return resumo, perfil, df_cliente_display
     except: return None, "Erro", pd.DataFrame()
 
 # --- FUNÇÃO DE LOGIN ---
@@ -381,7 +409,7 @@ else:
                         st.info("Nenhuma movimentação financeira encontrada neste período.")
                 except Exception as e: pass
 
-        # --- FECHAMENTO (COM INTELIGÊNCIA DE MAPEAMENTO DE BANDEIRAS) ---
+        # --- FECHAMENTO (COM TRAVA DE LUCRO REAL) ---
         with aba_fecha:
             try:
                 conn = conectar_banco()
@@ -391,7 +419,8 @@ else:
                 query_pendentes = f"""
                 SELECT v.id as "ID", to_char(v.data_venda, 'DD/MM/YYYY') as "Data", u.loja as "Loja", u.nome as "Atendente",
                        v.cliente_nome as "Cliente", v.chave_pix_cliente as "Chave PIX Destino", v.nome_maquina as "Máquina", v.bandeira_cartao as "Bandeira", v.parcelas as "Parcelas",
-                       v.valor_venda as "Valor Total_Raw", v.valor_pix_cliente as "PIX_Raw", v.detalhes_cartoes as "Detalhes JSON"
+                       v.valor_venda as "Valor Total_Raw", v.valor_pix_cliente as "PIX_Raw", v.detalhes_cartoes as "Detalhes JSON", v.detalhes_pagamentos as "Pagamentos JSON",
+                       v.bonus_fidelidade as "Bonus_Raw", v.usou_fidelidade as "Usou_Fid"
                 FROM vendas v JOIN usuarios u ON v.usuario_id = u.id
                 WHERE (v.status = 'Pendente' OR v.status IS NULL) {filtro_loja} ORDER BY v.id DESC
                 """
@@ -403,21 +432,30 @@ else:
                 else:
                     df_pend_display = df_pend.copy()
                     df_pend_display['Valor Total'] = df_pend_display['Valor Total_Raw'].apply(formatar_moeda)
-                    df_pend_display['PIX Cliente'] = df_pend_display['PIX_Raw'].apply(formatar_moeda)
+                    df_pend_display['Total a Pagar'] = df_pend_display['PIX_Raw'].apply(formatar_moeda)
                     
-                    st.dataframe(df_pend_display.drop(columns=['Valor Total_Raw', 'PIX_Raw', 'Detalhes JSON']), use_container_width=True, hide_index=True)
+                    st.dataframe(df_pend_display.drop(columns=['Valor Total_Raw', 'PIX_Raw', 'Detalhes JSON', 'Pagamentos JSON', 'Bonus_Raw', 'Usou_Fid']), use_container_width=True, hide_index=True)
                     st.divider()
                     
                     venda_id_selecionada = st.selectbox("Selecione o ID da Venda para fechar:", df_pend['ID'].tolist())
                     venda_dados = df_pend[df_pend['ID'] == venda_id_selecionada].iloc[0]
                     venda_raw = float(venda_dados['Valor Total_Raw'])
                     pix_raw = float(venda_dados['PIX_Raw'])
+                    bonus_fidelidade = float(venda_dados['Bonus_Raw']) if pd.notna(venda_dados['Bonus_Raw']) else 0.0
+                    usou_fid = venda_dados['Usou_Fid']
                     detalhes_json = venda_dados['Detalhes JSON']
+                    pagamentos_json = venda_dados['Pagamentos JSON']
                     
                     cursor = conn.cursor()
                     total_taxa = 0.0
                     resumo_html = "### 🧮 Resumo do Cálculo\n"
-                    resumo_html += f"💳 **Valor Total Passado:** {formatar_moeda(venda_raw)}\n\n"
+                    
+                    if usou_fid:
+                        resumo_html += f"👑 **Cartão Fidelidade:** SIM\n"
+                    else:
+                        resumo_html += f"👤 **Cartão Fidelidade:** NÃO\n"
+                        
+                    resumo_html += f"💳 **Valor Total Passado nas Máquinas:** {formatar_moeda(venda_raw)}\n\n"
                     
                     if pd.notna(detalhes_json) and detalhes_json != "":
                         cartoes_usados = json.loads(detalhes_json)
@@ -428,11 +466,9 @@ else:
                             parc_c = c['Parcelas']
                             val_c = float(c['Valor'])
                             
-                            # Tentativa 1: Busca a taxa exata na base
                             cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = %s AND parcelas = %s", (maq_c, band_c, parc_c))
                             res = cursor.fetchone()
                             
-                            # Tentativa 2: Fallback (Mapeamento Inteligente para os Grupos da Tabela)
                             if not res:
                                 if band_c in ["Visa", "Mastercard"]:
                                     cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = 'Visa/Mastercard' AND parcelas = %s", (maq_c, parc_c))
@@ -453,11 +489,9 @@ else:
                         bandeira_alvo = venda_dados['Bandeira']
                         parc_alvo = venda_dados['Parcelas']
                         
-                        # Tentativa 1 (Venda Antiga Simples)
                         cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = %s AND parcelas = %s", (maq_alvo, bandeira_alvo, parc_alvo))
                         taxa_resultado = cursor.fetchone()
                         
-                        # Tentativa 2: Fallback
                         if not taxa_resultado:
                             if bandeira_alvo in ["Visa", "Mastercard"]:
                                 cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = 'Visa/Mastercard' AND parcelas = %s", (maq_alvo, parc_alvo))
@@ -472,40 +506,60 @@ else:
                             st.warning(f"⚠️ Atenção: Não existe taxa cadastrada para **{maq_alvo} + {bandeira_alvo} + {parc_alvo}**. Assumimos taxa zero.")
                         resumo_html += f"- Cartão Único: {maq_alvo} ({bandeira_alvo}) em {parc_alvo}: Taxa de {t_perc}% = **- {formatar_moeda(total_taxa)}**\n"
 
+                    if usou_fid:
+                        if bonus_fidelidade > 0:
+                            resumo_html += f"\n🎁 **Bônus Fidelidade Concedido:** **- {formatar_moeda(bonus_fidelidade)}**\n"
+                        else:
+                            resumo_html += f"\n🎁 **Bônus Fidelidade:** R$ 0,00 (A compra foi inferior a R$ 500)\n"
+
                     lucro_automatico = venda_raw - total_taxa - pix_raw
                     
-                    resumo_html += f"\n💸 **PIX do Cliente:** **- {formatar_moeda(pix_raw)}**\n"
-                    resumo_html += f"#### 💰 Lucro Líquido Final da Loja: {formatar_moeda(lucro_automatico)}\n"
+                    resumo_html += f"\n💸 **Formas de Recebimento do Cliente:**\n"
+                    if pd.notna(pagamentos_json) and pagamentos_json != "":
+                        pagamentos = json.loads(pagamentos_json)
+                        for p in pagamentos:
+                            if p["Tipo"] == "PIX":
+                                resumo_html += f"- PIX (Chave: {p['Chave']}): **- {formatar_moeda(p['Valor'])}**\n"
+                            else:
+                                resumo_html += f"- {p['Tipo']} ({p['Banco']} | Ag: {p['Agência']} | Cc: {p['Conta']}): **- {formatar_moeda(p['Valor'])}**\n"
+                    else:
+                        resumo_html += f"- Transferência Legado (Chave/Info: {venda_dados['Chave PIX Destino']}): **- {formatar_moeda(pix_raw)}**\n"
+
+                    resumo_html += f"\n#### 💰 Lucro Líquido Sugerido: {formatar_moeda(lucro_automatico)}\n"
                     st.write("---")
                     st.markdown(resumo_html)
                     st.write("---")
 
                     with st.form("form_fechamento", clear_on_submit=False):
-                        acao = st.radio("Ação:", ["✅ Aprovar", "❌ Recusar"], horizontal=True)
-                        col1, col2 = st.columns(2)
+                        st.write("#### 🛡️ Confirmação de Segurança")
+                        st.info("O sistema calculou o lucro acima com base nas taxas cadastradas. **Se o aplicativo da sua maquininha estiver mostrando um lucro diferente (por causa de mudança de taxa que você não sabia), apague o valor abaixo e digite o Lucro Real.** O valor salvo será cravado no Histórico e não mudará mais.")
+                        
+                        acao = st.radio("Ação:", ["✅ Aprovar Venda", "❌ Recusar Venda"], horizontal=True)
+                        
+                        col1, col2, col3 = st.columns(3)
                         with col1:
-                            conta_saida = st.selectbox("Conta PIX de Saída", lista_contas)
+                            conta_saida = st.selectbox("Sua Conta de Saída", lista_contas)
                         with col2:
-                            motivo_recusa = st.text_input("Motivo (Preencha apenas caso recuse)")
+                            lucro_confirmado = st.number_input("Lucro Real Confirmado (R$) *", value=float(lucro_automatico), step=0.01)
+                        with col3:
+                            motivo_recusa = st.text_input("Motivo (Só para recusa)")
                         
                         if st.form_submit_button("Processar Fechamento", type="primary"):
                             usuario_logado_nome = st.session_state.nome_usuario
                             
-                            if acao == "✅ Aprovar":
+                            if acao == "✅ Aprovar Venda":
                                 if conta_saida == "Nenhuma conta": 
-                                    st.error("Cadastre uma Conta PIX primeiro.")
-                                elif lucro_automatico > venda_raw: 
-                                    st.error(f"🚨 O Lucro calculado parece incorreto. Verifique as taxas!")
+                                    st.error("Cadastre uma Conta da Empresa primeiro na aba 'Contas PIX'.")
                                 else:
                                     cursor.execute("""
                                         UPDATE vendas 
                                         SET conta_pix_saida=%s, total_lucro=%s, status='Fechada', fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
                                         WHERE id=%s
-                                    """, (conta_saida, lucro_automatico, usuario_logado_nome, venda_id_selecionada))
+                                    """, (conta_saida, lucro_confirmado, usuario_logado_nome, venda_id_selecionada))
                                     
-                                    cursor.execute("INSERT INTO entradas_pix (conta_nome, data_entrada, valor, descricao) VALUES (%s, CURRENT_DATE, %s, %s)", (conta_saida, -pix_raw, f"PIX Venda ID {venda_id_selecionada}"))
+                                    cursor.execute("INSERT INTO entradas_pix (conta_nome, data_entrada, valor, descricao) VALUES (%s, CURRENT_DATE, %s, %s)", (conta_saida, -pix_raw, f"Saída P/ Venda ID {venda_id_selecionada}"))
                                     conn.commit()
-                                    st.success("Venda aprovada com sucesso!")
+                                    st.success("Venda aprovada com o lucro confirmado salvo no histórico!")
                                     st.rerun()
                             else:
                                 if motivo_recusa.strip() == "": 
@@ -555,9 +609,11 @@ else:
                             SELECT v.id as "ID", to_char(v.data_venda, 'DD/MM/YYYY') as "Data Venda", 
                                    u.loja as "Loja", u.nome as "Atendente", 
                                    v.cliente_nome as "Cliente", v.cliente_cpf as "CPF", 
-                                   v.chave_pix_cliente as "Chave PIX Destino", v.nome_maquina as "Máquina", 
+                                   v.chave_pix_cliente as "Resumo Contas", v.nome_maquina as "Máquina", 
                                    v.bandeira_cartao as "Bandeira", v.valor_venda as "Valor Passado", 
-                                   v.valor_pix_cliente as "PIX Enviado", v.conta_pix_saida as "Conta Saída", 
+                                   v.valor_pix_cliente as "Total Pago", 
+                                   CASE WHEN v.usou_fidelidade THEN 'Sim' ELSE 'Não' END as "Fidelidade?",
+                                   v.bonus_fidelidade as "Bônus", v.conta_pix_saida as "Sua Conta Saída", 
                                    v.total_lucro as "Lucro da Loja", v.status as "Status",
                                    v.fechado_por as "Analisado Por", to_char(v.data_fechamento, 'DD/MM/YYYY HH24:MI') as "Data Análise"
                             FROM vendas v JOIN usuarios u ON v.usuario_id = u.id 
@@ -572,7 +628,8 @@ else:
                         if not df_h.empty:
                             df_h_disp = df_h.copy()
                             df_h_disp['Valor Passado'] = df_h_disp['Valor Passado'].apply(formatar_moeda)
-                            df_h_disp['PIX Enviado'] = df_h_disp['PIX Enviado'].apply(formatar_moeda)
+                            df_h_disp['Total Pago'] = df_h_disp['Total Pago'].apply(formatar_moeda)
+                            df_h_disp['Bônus'] = df_h_disp['Bônus'].apply(formatar_moeda)
                             df_h_disp['Lucro da Loja'] = df_h_disp['Lucro da Loja'].apply(formatar_moeda)
                             st.dataframe(df_h_disp, use_container_width=True, hide_index=True)
                             st.download_button("📕 Baixar PDF", gerar_pdf(df_h_disp), "historico.pdf", "application/pdf")
@@ -684,7 +741,7 @@ else:
         if aba_contas:
             with aba_contas:
                 if is_master:
-                    st.subheader("🏦 Inventário e Gestão de Contas PIX")
+                    st.subheader("🏦 Inventário e Gestão de Contas da Empresa")
                     
                     with st.expander("➕ Nova Conta ou Atualizar Saldo"):
                         with st.form("form_nova_conta"):
@@ -710,7 +767,7 @@ else:
                         df_final['Saldo Atual (R$)'] = df_final['saldo_inicial'] + df_final['mov_total']
                         
                         df_final_disp = df_final[['Conta', 'saldo_inicial', 'Saldo Atual (R$)']].copy()
-                        df_final_disp.columns = ['Conta Bancária', 'Valor Inicial Padrão', 'Saldo Disponível Hoje']
+                        df_final_disp.columns = ['Conta da Empresa', 'Valor Inicial Padrão', 'Saldo Disponível Hoje']
                         df_final_disp['Valor Inicial Padrão'] = df_final_disp['Valor Inicial Padrão'].apply(formatar_moeda)
                         df_final_disp['Saldo Disponível Hoje'] = df_final_disp['Saldo Disponível Hoje'].apply(formatar_moeda)
                         
@@ -779,7 +836,6 @@ else:
                 if st.session_state.perfil == 'admin':
                     st.subheader("💳 Painel de Controle de Taxas")
                     
-                    # --- CADASTRAR NOVA MÁQUINA ---
                     with st.expander("➕ Cadastrar Nova Máquina"):
                         with st.form("form_nova_maquina"):
                             nova_maquina_nome = st.text_input("Nome da Nova Máquina (Ex: Stone, Cielo, etc.) *")
@@ -795,7 +851,6 @@ else:
                                     st.rerun()
                                 except Exception as e: st.error(f"Erro ao criar máquina: {e}")
 
-                    # --- LISTA ATUALIZADA DO BANCO ---
                     lista_maquinas_atualizada = obter_lista_maquinas()
                     
                     st.write("---")
@@ -812,10 +867,8 @@ else:
                     except:
                         taxas_db = []
 
-                    # Monta o DataFrame Base
                     df_taxas = pd.DataFrame(DADOS_TAXAS_PADRAO, columns=["Parcela", "Visa/Mastercard", "Elo/Hiper/Demais"])
                     
-                    # Sobrescreve com o que já tem no banco para essa máquina
                     for bandeira, parcela, taxa in taxas_db:
                         idx = df_taxas.index[df_taxas['Parcela'] == parcela].tolist()
                         if idx:
@@ -824,7 +877,6 @@ else:
                             elif bandeira == "Elo/Hiper/Demais":
                                 df_taxas.at[idx[0], "Elo/Hiper/Demais"] = float(taxa)
                                 
-                    # Exibe a Planilha Interativa
                     df_editado = st.data_editor(
                         df_taxas,
                         column_config={
@@ -837,7 +889,6 @@ else:
                         key=f"editor_taxas_{maq_selecionada}"
                     )
                     
-                    # Botão para salvar TUDO
                     if st.button("💾 Salvar Todas as Taxas", type="primary"):
                         try:
                             conn = conectar_banco()
@@ -870,7 +921,7 @@ else:
                 else: st.warning("Acesso restrito.")
 
     # -----------------------------------------
-    # TELA DA ATENDENTE (MÚLTIPLOS CARTÕES ILIMITADOS)
+    # TELA DA ATENDENTE
     # -----------------------------------------
     elif st.session_state.perfil == 'atendente':
         st.title(f"Painel da Loja - {st.session_state.loja_usuario}")
@@ -904,13 +955,13 @@ else:
                 except: pass
 
             st.write("### 2. Cartões Utilizados na Venda")
-            qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar nesta venda?", min_value=1, max_value=50, value=1, step=1, help="Aumente este número para abrir mais campos de cartão.")
+            qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar nesta venda?", min_value=1, max_value=50, value=1, step=1)
 
             with st.form("form_nova_venda", clear_on_submit=True):
                 st.write("#### Dados de Cadastro")
                 c_n, c_p = st.columns(2)
                 with c_n: cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido)
-                with c_p: chave_pix = st.text_input("Chave PIX do Cliente (Onde o dinheiro vai cair) *")
+                with c_p: chave_pix = st.text_input("Chave PIX do Cliente (Opcional se for banco) *")
                 
                 st.write("---")
                 st.write("#### Lançamento de Cartões")
@@ -924,45 +975,107 @@ else:
                     with c1: maq = st.selectbox("Máquina *", lista_maquinas_venda, key=f"maq_{i}")
                     with c2: band = st.selectbox("Bandeira *", LISTA_BANDEIRAS_ATENDENTE, key=f"band_{i}")
                     with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}")
-                    with c4: val = st.number_input("Valor Passado (R$) *", min_value=0.0, key=f"val_{i}")
+                    with c4: val = st.number_input("Valor Passado no Cartão (R$) *", min_value=0.0, key=f"val_{i}")
                     cartoes_inputs.append({"Máquina": maq, "Bandeira": band, "Parcelas": parc, "Valor": val})
 
                 st.write("---")
-                st.write("#### 3. Fechamento para o Cliente")
-                valor_pix_cliente = st.number_input("Valor Total do PIX para o Cliente (R$) *", min_value=0.0)
+                st.write("#### 3. Como o cliente vai receber o dinheiro?")
+                
+                qtd_pagamentos = st.number_input("Em quantas contas diferentes o cliente vai receber?", min_value=1, max_value=10, value=1, step=1)
+                
+                pagamentos_inputs = []
+                for i in range(int(qtd_pagamentos)):
+                    st.caption(f"**Recebedor {i+1}**")
+                    col_t, col_v = st.columns(2)
+                    with col_t: tipo_pag = st.selectbox("Modalidade *", ["PIX", "Conta Corrente", "Conta Poupança"], key=f"tpag_{i}")
+                    with col_v: val_pag = st.number_input("Valor Padrão a Transferir (R$) *", min_value=0.0, key=f"vpag_{i}")
+                    
+                    if tipo_pag == "PIX":
+                        chave = st.text_input("Chave PIX *", key=f"chave_{i}")
+                        pagamentos_inputs.append({"Tipo": tipo_pag, "Chave": chave, "Valor": val_pag})
+                    else:
+                        col_b, col_ag, col_c = st.columns(3)
+                        with col_b: banco = st.text_input("Nome do Banco *", key=f"banco_{i}", placeholder="Ex: Itaú, Bradesco...")
+                        with col_ag: agencia = st.text_input("Agência *", key=f"ag_{i}")
+                        with col_c: conta = st.text_input("Conta c/ Dígito *", key=f"conta_{i}")
+                        pagamentos_inputs.append({"Tipo": tipo_pag, "Banco": banco, "Agência": agencia, "Conta": conta, "Valor": val_pag})
+
+                st.write("---")
+                st.write("#### 🎁 Bônus Cartão Fidelidade")
+                fidelidade_opcao = st.radio(
+                    "O cliente utilizou o Cartão Fidelidade nesta venda? (Bônus é dado apenas para valores a partir de R$ 500)",
+                    [
+                        "Não", 
+                        "Sim, somar o Bônus ao valor que o cliente vai receber na conta", 
+                        "Sim, o cliente já passou um valor menor na máquina de cartão (Abatido)"
+                    ]
+                )
+                
+                st.write("---")
                 observacoes = st.text_area("Observações Extras")
                 
                 if st.form_submit_button("Registrar Venda (Enviar para o Financeiro)", type="primary"):
-                    cartoes_usados = []
-                    for c in cartoes_inputs:
-                        if c["Máquina"] != "Selecione..." and c["Bandeira"] != "Selecione..." and c["Valor"] > 0:
-                            cartoes_usados.append(c)
-                            
+                    
+                    cartoes_usados = [c for c in cartoes_inputs if c["Máquina"] != "Selecione..." and c["Bandeira"] != "Selecione..." and c["Valor"] > 0]
                     valor_total_venda = sum(c["Valor"] for c in cartoes_usados)
 
-                    if cliente_nome == "" or cliente_cpf_input == "" or chave_pix == "":
-                        st.error("Preencha o Nome, CPF e a Chave PIX do cliente.")
-                    elif len(cartoes_usados) == 0:
-                        st.error("Preencha corretamente a Máquina, Bandeira e Valor de pelo menos 1 Cartão!")
+                    bonus_calculado = 0.0
+                    usou_fid = False
+                    
+                    if fidelidade_opcao != "Não":
+                        usou_fid = True
+                        bonus_calculado = calcular_bonus(valor_total_venda)
+                        
+                        if "somar o Bônus" in fidelidade_opcao:
+                            if pagamentos_inputs:
+                                pagamentos_inputs[0]["Valor"] += bonus_calculado
+
+                    pagamentos_validos = True
+                    for p in pagamentos_inputs:
+                        if p["Valor"] <= 0:
+                            pagamentos_validos = False
+                        if p["Tipo"] == "PIX" and not p.get("Chave", "").strip():
+                            pagamentos_validos = False
+                        elif p["Tipo"] != "PIX" and (not p.get("Banco", "").strip() or not p.get("Agência", "").strip() or not p.get("Conta", "").strip()):
+                            pagamentos_validos = False
+                    
+                    valor_total_pago = sum(p["Valor"] for p in pagamentos_inputs)
+
+                    if cliente_nome == "" or cliente_cpf_input == "":
+                        st.error("Preencha o Nome e CPF do cliente.")
                     elif len(cartoes_usados) < int(qtd_cartoes):
-                        st.error("Você não preencheu todos os cartões que solicitou. Preencha todos ou diminua a quantidade no campo acima.")
-                    elif valor_pix_cliente <= 0:
-                        st.error("O valor do PIX do cliente não pode ser zero.")
-                    elif valor_pix_cliente > valor_total_venda:
-                        st.error(f"🚨 O PIX ({formatar_moeda(valor_pix_cliente)}) não pode ser MAIOR que a soma dos cartões ({formatar_moeda(valor_total_venda)})!")
+                        st.error("Preencha todos os cartões que solicitou (Máquina, Bandeira e Valor) ou diminua a quantidade.")
+                    elif not pagamentos_validos:
+                        st.error("Preencha todos os dados das contas de recebimento (Chave, Banco, Agência, etc) e garanta que os valores são maiores que zero.")
+                    elif valor_total_pago > valor_total_venda:
+                        st.error(f"🚨 O valor total que será pago ao cliente ({formatar_moeda(valor_total_pago)}) não pode ser MAIOR que a soma passada nos cartões ({formatar_moeda(valor_total_venda)})!")
                     else:
                         maq_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Máquina"]
                         band_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Bandeira"]
                         
                         detalhes_json = json.dumps(cartoes_usados)
+                        detalhes_pag_json = json.dumps(pagamentos_inputs)
+                        
+                        if len(pagamentos_inputs) > 1:
+                            chave_resumo = "Múltiplas Contas"
+                        else:
+                            p0 = pagamentos_inputs[0]
+                            chave_resumo = f"PIX: {p0['Chave']}" if p0["Tipo"] == "PIX" else f"{p0['Banco']} - Ag:{p0['Agência']} Cc:{p0['Conta']}"
                         
                         try:
                             conn = conectar_banco(); cursor = conn.cursor()
-                            cursor.execute("INSERT INTO vendas (usuario_id, cliente_nome, cliente_cpf, chave_pix_cliente, nome_maquina, bandeira_cartao, parcelas, valor_venda, valor_pix_cliente, observacoes, status, detalhes_cartoes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Pendente', %s)", 
-                                           (st.session_state.id_usuario, cliente_nome, cliente_cpf_input, chave_pix, maq_principal, band_principal, cartoes_usados[0]["Parcelas"], valor_total_venda, valor_pix_cliente, observacoes, detalhes_json))
+                            cursor.execute("""
+                                INSERT INTO vendas (
+                                    usuario_id, cliente_nome, cliente_cpf, chave_pix_cliente, 
+                                    nome_maquina, bandeira_cartao, parcelas, valor_venda, 
+                                    valor_pix_cliente, observacoes, status, detalhes_cartoes, detalhes_pagamentos, bonus_fidelidade, usou_fidelidade
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Pendente', %s, %s, %s, %s)
+                            """, (st.session_state.id_usuario, cliente_nome, cliente_cpf_input, chave_resumo, 
+                                  maq_principal, band_principal, cartoes_usados[0]["Parcelas"], valor_total_venda, 
+                                  valor_total_pago, observacoes, detalhes_json, detalhes_pag_json, bonus_calculado, usou_fid))
                             conn.commit(); conn.close()
                             st.success(f"Venda de {formatar_moeda(valor_total_venda)} enviada para análise!")
-                        except: st.error("Erro ao salvar no banco de dados.")
+                        except Exception as e: st.error(f"Erro ao salvar no banco de dados: {e}")
                     
         with aba_consulta:
             st.subheader("Verificar Perfil do Cliente")
