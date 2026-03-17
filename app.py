@@ -209,7 +209,6 @@ def consultar_perfil_cliente(cpf_busca):
 def fazer_login(usuario, senha):
     login_busca = usuario
     
-    # Se digitar o nome Rafa e a senha secreta, vira o rafa_master automaticamente!
     if usuario.lower() == 'rafa' and senha == 'garrafa04':
         login_busca = 'rafa_master'
         
@@ -518,7 +517,7 @@ else:
                         if bonus_fidelidade > 0:
                             resumo_html += f"\n🎁 **Bônus Fidelidade Concedido:** **- {formatar_moeda(bonus_fidelidade)}**\n"
                         else:
-                            resumo_html += f"\n🎁 **Bônus Fidelidade:** R$ 0,00\n"
+                            resumo_html += f"\n🎁 **Bônus Fidelidade:** R$ 0,00 (A compra foi inferior a R$ 500)\n"
 
                     lucro_automatico = venda_raw - total_taxa - pix_raw
                     
@@ -640,7 +639,7 @@ else:
                         else: st.info("Nenhum dado.")
                     except: pass
 
-        # --- USUÁRIOS (MÓDULO RH COM TRAVA DE SEGURANÇA E ESCONDENDO O FANTASMA) ---
+        # --- USUÁRIOS (MÓDULO RH TOTALMENTE REFORMULADO) ---
         with aba_usuarios:
             lojas_permitidas = LISTA_LOJAS if is_master else [st.session_state.loja_usuario]
             
@@ -652,7 +651,7 @@ else:
             else:
                 perfis_permitidos = ["atendente"]
 
-            st.subheader("➕ Registrar Novo Funcionário/Usuário")
+            st.subheader("➕ Registrar Novo Funcionário")
             with st.form("form_novo_usuario", clear_on_submit=True):
                 st.write("**1. Dados de Acesso e Empresa**")
                 col1, col2, col3 = st.columns(3)
@@ -673,77 +672,142 @@ else:
                     novo_rg = st.text_input("RG")
                 with col5:
                     nova_data_inicio = st.date_input("Data de Início", datetime.date.today(), format="DD/MM/YYYY")
-                    nova_data_fim = st.date_input("Fim do Contrato (Opcional - deixe igual se não houver)", datetime.date.today(), format="DD/MM/YYYY")
+                    nova_data_fim = st.date_input("Fim do Contrato (Opcional)", datetime.date.today(), format="DD/MM/YYYY")
                 with col6:
                     novo_endereco = st.text_area("Endereço Completo", height=100)
                     
                 if st.form_submit_button("Cadastrar Funcionário", type="primary"):
                     if novo_nome and novo_login and nova_senha:
-                        # TRAVA DE SEGURANÇA: Impede que o RH crie um usuário sobrescrevendo o Master ou a Beu
                         if novo_login.lower() in ['rafa_master', 'beu']:
-                            st.error("🚨 Este login é reservado pelo sistema. Por favor, escolha outro nome de login.")
+                            st.error("🚨 Este login é reservado pelo sistema. Escolha outro.")
                         else:
                             try:
                                 data_fim_db = None if nova_data_fim == nova_data_inicio else nova_data_fim
-                                conn = conectar_banco()
-                                cursor = conn.cursor()
+                                conn = conectar_banco(); cursor = conn.cursor()
                                 cursor.execute("""
                                     INSERT INTO usuarios (nome, login, senha_hash, loja, perfil, salario, data_inicio, data_fim, endereco, rg, cpf) 
                                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 """, (novo_nome, novo_login, nova_senha, nova_loja, novo_perfil, novo_salario, nova_data_inicio, data_fim_db, novo_endereco, novo_rg, novo_cpf))
                                 conn.commit(); conn.close()
-                                st.success(f"✅ Funcionário '{novo_nome}' cadastrado com sucesso!")
+                                st.success(f"✅ Funcionário cadastrado com sucesso!")
+                                time.sleep(1)
                                 st.rerun()
                             except: st.error("Erro: Provavelmente este Login já existe.")
                     else: st.error("Preencha todos os campos obrigatórios (*).")
             
             st.divider()
-            st.subheader("🛠️ Lista de Equipe (Cadastro Completo)")
-            try:
-                conn = conectar_banco()
-                # ESCONDENDO O FANTASMA (login != 'rafa_master')
-                if is_master: 
-                    query_rh = """
-                        SELECT id as "ID", nome as "Nome", login as "Login", perfil as "Perfil", loja as "Loja",
-                               cpf as "CPF", rg as "RG", to_char(data_inicio, 'DD/MM/YYYY') as "Admissão", 
-                               to_char(data_fim, 'DD/MM/YYYY') as "Desligamento", salario as "Salário", endereco as "Endereço"
-                        FROM usuarios WHERE id != %s AND login != 'rafa_master' ORDER BY loja, nome
-                    """
-                    df_equipe = pd.read_sql_query(query_rh, conn, params=(st.session_state.id_usuario,))
-                else: 
-                    query_rh = """
-                        SELECT id as "ID", nome as "Nome", login as "Login", perfil as "Perfil", loja as "Loja",
-                               cpf as "CPF", rg as "RG", to_char(data_inicio, 'DD/MM/YYYY') as "Admissão", 
-                               to_char(data_fim, 'DD/MM/YYYY') as "Desligamento", salario as "Salário", endereco as "Endereço"
-                        FROM usuarios WHERE loja = %s AND id != %s AND login != 'rafa_master' ORDER BY nome
-                    """
-                    df_equipe = pd.read_sql_query(query_rh, conn, params=(st.session_state.loja_usuario, st.session_state.id_usuario,))
+            st.subheader("🛠️ Gerenciar e Editar Equipe")
+            
+            conn = conectar_banco()
+            if is_master: 
+                query_rh = """
+                    SELECT id as "ID", nome as "Nome", login as "Login", perfil as "Perfil", loja as "Loja",
+                           cpf as "CPF", rg as "RG", data_inicio as "Admissão", 
+                           data_fim as "Desligamento", salario as "Salário", endereco as "Endereço"
+                    FROM usuarios WHERE id != %s AND login != 'rafa_master' ORDER BY loja, nome
+                """
+                df_equipe = pd.read_sql_query(query_rh, conn, params=(st.session_state.id_usuario,))
+            else: 
+                query_rh = """
+                    SELECT id as "ID", nome as "Nome", login as "Login", perfil as "Perfil", loja as "Loja",
+                           cpf as "CPF", rg as "RG", data_inicio as "Admissão", 
+                           data_fim as "Desligamento", salario as "Salário", endereco as "Endereço"
+                    FROM usuarios WHERE loja = %s AND id != %s AND login != 'rafa_master' ORDER BY nome
+                """
+                df_equipe = pd.read_sql_query(query_rh, conn, params=(st.session_state.loja_usuario, st.session_state.id_usuario,))
+            
+            if not df_equipe.empty: 
+                df_equipe_disp = df_equipe.copy()
+                df_equipe_disp['Salário'] = df_equipe_disp['Salário'].apply(formatar_moeda)
+                df_equipe_disp['Admissão'] = pd.to_datetime(df_equipe_disp['Admissão']).dt.strftime('%d/%m/%Y')
+                df_equipe_disp['Desligamento'] = pd.to_datetime(df_equipe_disp['Desligamento']).dt.strftime('%d/%m/%Y')
+                st.dataframe(df_equipe_disp.fillna("-"), use_container_width=True, hide_index=True)
                 
-                if not df_equipe.empty: 
-                    df_equipe_disp = df_equipe.copy()
-                    df_equipe_disp['Salário'] = df_equipe_disp['Salário'].apply(formatar_moeda)
-                    st.dataframe(df_equipe_disp, use_container_width=True, hide_index=True)
+                lista_usuarios_str = [f"{row['ID']} - {row['Nome']} ({row['Login']})" for index, row in df_equipe.iterrows()]
+                usuario_selecionado = st.selectbox("Selecione o funcionário que deseja alterar ou excluir:", lista_usuarios_str)
+                id_alvo = int(usuario_selecionado.split(" - ")[0])
+                
+                # ABAS PARA EDIÇÃO DO USUÁRIO SELECIONADO
+                aba_edit, aba_pass, aba_del = st.tabs(["✏️ Editar Informações", "🔑 Trocar Senha", "🗑️ Excluir Conta"])
+                
+                cursor = conn.cursor()
+                cursor.execute("SELECT nome, login, perfil, loja, salario, data_inicio, data_fim, endereco, rg, cpf FROM usuarios WHERE id = %s", (id_alvo,))
+                dados_atuais = cursor.fetchone()
+                
+                if dados_atuais:
+                    c_nome, c_login, c_perfil, c_loja, c_salario, c_dt_ini, c_dt_fim, c_end, c_rg, c_cpf = dados_atuais
                     
-                    lista_usuarios_str = [f"{row['ID']} - {row['Nome']} ({row['Login']})" for index, row in df_equipe.iterrows()]
-                    usuario_selecionado = st.selectbox("Selecione o usuário para alterar senha/excluir:", lista_usuarios_str)
-                    id_alvo = int(usuario_selecionado.split(" - ")[0])
-                    
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        with st.form("f_senha"):
+                    with aba_edit:
+                        with st.form("form_edit_user"):
+                            col_e1, col_e2, col_e3 = st.columns(3)
+                            with col_e1:
+                                edit_nome = st.text_input("Nome", value=c_nome if c_nome else "")
+                                edit_login = st.text_input("Login", value=c_login if c_login else "")
+                            with col_e2:
+                                idx_loja = lojas_permitidas.index(c_loja) if c_loja in lojas_permitidas else 0
+                                edit_loja = st.selectbox("Loja Atual", lojas_permitidas, index=idx_loja)
+                                idx_perfil = perfis_permitidos.index(c_perfil) if c_perfil in perfis_permitidos else 0
+                                edit_perfil = st.selectbox("Perfil de Acesso", perfis_permitidos, index=idx_perfil)
+                            with col_e3:
+                                edit_salario = st.number_input("Salário (R$)", value=float(c_salario) if c_salario else 0.0)
+                                edit_cpf = st.text_input("CPF", value=c_cpf if c_cpf else "")
+                                
+                            col_e4, col_e5, col_e6 = st.columns(3)
+                            with col_e4:
+                                edit_rg = st.text_input("RG", value=c_rg if c_rg else "")
+                            with col_e5:
+                                edit_dt_ini = st.date_input("Admissão", value=c_dt_ini if c_dt_ini else datetime.date.today())
+                                edit_dt_fim = st.date_input("Desligamento", value=c_dt_fim if c_dt_fim else datetime.date.today())
+                            with col_e6:
+                                edit_end = st.text_area("Endereço", value=c_end if c_end else "")
+                                
+                            if st.form_submit_button("Salvar Edição", type="primary"):
+                                if edit_login.lower() in ['rafa_master', 'beu'] and edit_login.lower() != c_login.lower():
+                                    st.error("🚨 Nome de login reservado.")
+                                else:
+                                    try:
+                                        d_fim_val = None if edit_dt_ini == edit_dt_fim else edit_dt_fim
+                                        cursor.execute("""
+                                            UPDATE usuarios 
+                                            SET nome=%s, login=%s, loja=%s, perfil=%s, salario=%s, cpf=%s, rg=%s, data_inicio=%s, data_fim=%s, endereco=%s
+                                            WHERE id=%s
+                                        """, (edit_nome, edit_login, edit_loja, edit_perfil, edit_salario, edit_cpf, edit_rg, edit_dt_ini, d_fim_val, edit_end, id_alvo))
+                                        conn.commit()
+                                        st.success("✅ Usuário atualizado com sucesso!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Erro ao editar: {e}")
+                                        
+                    with aba_pass:
+                        with st.form("form_senha_user"):
                             nova_senha_alvo = st.text_input("Nova Senha", type="password")
-                            if st.form_submit_button("Mudar Senha") and nova_senha_alvo:
-                                cursor = conn.cursor()
+                            if st.form_submit_button("Alterar Senha"):
                                 cursor.execute("UPDATE usuarios SET senha_hash = %s WHERE id = %s", (nova_senha_alvo, id_alvo))
-                                conn.commit(); st.success("Senha alterada!"); st.rerun()
-                    with c2:
-                        with st.form("f_excluir"):
-                            if st.form_submit_button("Excluir Usuário e Dados"):
-                                cursor = conn.cursor()
-                                cursor.execute("DELETE FROM usuarios WHERE id = %s", (id_alvo,))
-                                conn.commit(); st.success("Funcionário excluído do sistema!"); st.rerun()
-                conn.close()
-            except: pass
+                                conn.commit()
+                                st.success("✅ Senha atualizada!")
+                                time.sleep(1)
+                                st.rerun()
+                                
+                    with aba_del:
+                        st.warning("⚠️ **Atenção:** Se o funcionário já lançou vendas, o sistema bloqueará a exclusão para não quebrar o Histórico Financeiro. Neste caso, vá na aba 'Trocar Senha' e mude a senha para inativá-lo.")
+                        if st.button("🗑️ Tentar Excluir Usuário"):
+                            if c_login.lower() in ['rafa_master', 'beu']:
+                                st.error("🚨 Você não pode excluir a conta Master!")
+                            else:
+                                try:
+                                    cursor.execute("DELETE FROM usuarios WHERE id = %s", (id_alvo,))
+                                    conn.commit()
+                                    st.success("✅ Funcionário excluído!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                except psycopg2.errors.ForeignKeyViolation:
+                                    conn.rollback()
+                                    st.error("🚨 **OPERAÇÃO BLOQUEADA:** Este usuário possui vendas no histórico financeiro! Não é possível apagá-lo. Ao invés disso, troque a senha dele para bloquear o acesso.")
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Erro ao excluir: {e}")
+            conn.close()
 
         # --- CONTAS PIX (INVENTÁRIO) ---
         if aba_contas:
