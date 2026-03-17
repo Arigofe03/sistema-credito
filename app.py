@@ -39,6 +39,24 @@ DADOS_TAXAS_PADRAO = [
     ("18x", 15.37, 16.37)
 ]
 
+# --- BUSCA DINÂMICA DE MÁQUINAS ---
+def obter_lista_maquinas():
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT nome_maquina FROM taxas_cartoes_v2 WHERE nome_maquina != 'Múltiplas'")
+        resultados = cursor.fetchall()
+        conn.close()
+        maquinas_db = [r[0] for r in resultados]
+        
+        # Garante que as originais sempre apareçam mesmo se o banco estiver vazio
+        padroes = ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"]
+        todas = list(set(padroes + maquinas_db))
+        todas.sort()
+        return todas
+    except:
+        return ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"]
+
 # --- INICIALIZAÇÃO AUTOMÁTICA DE TABELAS E COLUNAS ---
 def inicializar_banco():
     try:
@@ -66,7 +84,6 @@ def inicializar_banco():
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS chave_pix_cliente VARCHAR(100) DEFAULT 'Não Informada';")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS detalhes_cartoes TEXT;")
         
-        # NOVAS COLUNAS PARA AUDITORIA DE FECHAMENTO
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS fechado_por VARCHAR(100);")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS data_fechamento TIMESTAMP;")
         
@@ -97,7 +114,6 @@ def gerar_pdf(df):
     
     pdf.set_font('Arial', 'B', 6)
     colunas = list(df.columns)
-    # Ajuste de larguras para comportar as novas colunas
     larguras = [8, 15, 15, 20, 25, 20, 25, 15, 15, 18, 18, 18, 18, 15, 20, 25] 
     for i, col in enumerate(colunas):
         if i < len(larguras):
@@ -461,7 +477,6 @@ else:
                                 elif lucro_automatico > venda_raw: 
                                     st.error(f"🚨 O Lucro calculado parece incorreto. Verifique as taxas!")
                                 else:
-                                    # REGISTRA QUEM APROVOU E A DATA/HORA
                                     cursor.execute("""
                                         UPDATE vendas 
                                         SET conta_pix_saida=%s, total_lucro=%s, status='Fechada', fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
@@ -476,7 +491,6 @@ else:
                                 if motivo_recusa.strip() == "": 
                                     st.error("Para recusar, é obrigatório preencher o Motivo da recusa.")
                                 else:
-                                    # REGISTRA QUEM RECUSOU E A DATA/HORA
                                     cursor.execute("""
                                         UPDATE vendas 
                                         SET status='Recusada', motivo_recusa=%s, fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
@@ -517,7 +531,6 @@ else:
                 if st.form_submit_button("🔍 Buscar"):
                     try:
                         conn = conectar_banco()
-                        # QUERY ATUALIZADA: Puxando as novas colunas de Auditoria (Fechado Por e Data Análise)
                         query_h = """
                             SELECT v.id as "ID", to_char(v.data_venda, 'DD/MM/YYYY') as "Data Venda", 
                                    u.loja as "Loja", u.nome as "Atendente", 
@@ -740,14 +753,35 @@ else:
                 conn.close()
             except: pass
 
-        # --- TAXAS DA MÁQUINA (NOVO PADRÃO COM EDITOR DE PLANILHA) ---
+        # --- TAXAS DA MÁQUINA (NOVO PADRÃO DINÂMICO) ---
         if aba_taxas:
             with aba_taxas:
                 if st.session_state.perfil == 'admin':
                     st.subheader("💳 Painel de Controle de Taxas")
-                    st.write("Selecione a máquina abaixo. A tabela virá preenchida com as taxas padrão. Altere qualquer valor dando dois cliques na célula e depois clique em **Salvar Todas as Taxas**.")
                     
-                    maq_selecionada = st.selectbox("Selecione a Máquina:", ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"])
+                    # --- CADASTRAR NOVA MÁQUINA ---
+                    with st.expander("➕ Cadastrar Nova Máquina"):
+                        with st.form("form_nova_maquina"):
+                            nova_maquina_nome = st.text_input("Nome da Nova Máquina (Ex: Stone, Cielo, etc.) *")
+                            st.caption("Ao criar, ela receberá as taxas padrão automaticamente. Você poderá editá-las abaixo.")
+                            if st.form_submit_button("Adicionar Máquina", type="primary") and nova_maquina_nome.strip():
+                                try:
+                                    conn = conectar_banco(); cursor = conn.cursor()
+                                    for p, t_vm, t_elo in DADOS_TAXAS_PADRAO:
+                                        cursor.execute("INSERT INTO taxas_cartoes_v2 (nome_maquina, bandeira, parcelas, taxa_percentual) VALUES (%s, %s, %s, %s) ON CONFLICT (nome_maquina, bandeira, parcelas) DO NOTHING", (nova_maquina_nome.strip(), "Visa/Mastercard", p, t_vm))
+                                        cursor.execute("INSERT INTO taxas_cartoes_v2 (nome_maquina, bandeira, parcelas, taxa_percentual) VALUES (%s, %s, %s, %s) ON CONFLICT (nome_maquina, bandeira, parcelas) DO NOTHING", (nova_maquina_nome.strip(), "Elo/Hiper/Demais", p, t_elo))
+                                    conn.commit(); conn.close()
+                                    st.success(f"Máquina '{nova_maquina_nome}' adicionada com sucesso!")
+                                    st.rerun()
+                                except Exception as e: st.error(f"Erro ao criar máquina: {e}")
+
+                    # --- LISTA ATUALIZADA DO BANCO ---
+                    lista_maquinas_atualizada = obter_lista_maquinas()
+                    
+                    st.write("---")
+                    st.write("Selecione a máquina abaixo. A tabela virá preenchida com as taxas atuais. Altere qualquer valor dando dois cliques na célula e depois clique em **Salvar Todas as Taxas**.")
+                    
+                    maq_selecionada = st.selectbox("Selecione a Máquina para Editar:", lista_maquinas_atualizada)
                     
                     try:
                         conn = conectar_banco()
@@ -862,10 +896,13 @@ else:
                 st.write("#### Lançamento de Cartões")
                 cartoes_inputs = []
                 
+                # O menu de máquinas da atendente agora lê do banco!
+                lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas()
+                
                 for i in range(int(qtd_cartoes)):
                     st.caption(f"**Cartão {i+1}**")
                     c1, c2, c3, c4 = st.columns(4)
-                    with c1: maq = st.selectbox("Máquina *", ["Selecione...", "Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"], key=f"maq_{i}")
+                    with c1: maq = st.selectbox("Máquina *", lista_maquinas_venda, key=f"maq_{i}")
                     with c2: band = st.selectbox("Bandeira *", LISTA_BANDEIRAS_ATENDENTE, key=f"band_{i}")
                     with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}")
                     with c4: val = st.number_input("Valor Passado (R$) *", min_value=0.0, key=f"val_{i}")
