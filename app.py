@@ -4,6 +4,7 @@ import pandas as pd
 import datetime
 import tempfile
 import json
+import time
 from fpdf import FPDF
 import plotly.express as px
 
@@ -90,10 +91,7 @@ def inicializar_banco():
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS detalhes_cartoes TEXT;")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS detalhes_pagamentos TEXT;")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS bonus_fidelidade NUMERIC(15,2) DEFAULT 0.0;")
-        
-        # NOVA COLUNA PARA O CARTÃO FIDELIDADE
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS usou_fidelidade BOOLEAN DEFAULT FALSE;")
-        
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS fechado_por VARCHAR(100);")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS data_fechamento TIMESTAMP;")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS salario NUMERIC(15,2);")
@@ -154,7 +152,6 @@ def consultar_perfil_cliente(cpf_busca):
         usou_fid = False
         if not df_cliente.empty and 'usou_fidelidade' in df_cliente.columns:
             usou_fid = df_cliente['usou_fidelidade'].any()
-            # Esconde a coluna booleana pra tabela ficar bonita na tela
             df_cliente_display = df_cliente.drop(columns=['usou_fidelidade'])
         else:
             df_cliente_display = df_cliente
@@ -172,7 +169,6 @@ def consultar_perfil_cliente(cpf_busca):
         elif aprovadas > 1: perfil = "🔄 Cliente Frequente"
         else: perfil = "🆕 Cliente Novo"
             
-        # Adiciona a coroa de Fidelidade se o cliente já usou alguma vez
         if usou_fid:
             perfil += " | 👑 Fidelidade"
             
@@ -921,7 +917,7 @@ else:
                 else: st.warning("Acesso restrito.")
 
     # -----------------------------------------
-    # TELA DA ATENDENTE
+    # TELA DA ATENDENTE (REATIVA / SEM FORMULÁRIO GERAL)
     # -----------------------------------------
     elif st.session_state.perfil == 'atendente':
         st.title(f"Painel da Loja - {st.session_state.loja_usuario}")
@@ -954,129 +950,164 @@ else:
                     conn.close()
                 except: pass
 
-            st.write("### 2. Cartões Utilizados na Venda")
-            qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar nesta venda?", min_value=1, max_value=50, value=1, step=1)
+            st.write("### 2. Configuração da Venda")
+            col_q1, col_q2 = st.columns(2)
+            with col_q1:
+                qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar?", min_value=1, max_value=50, value=1, step=1)
+            with col_q2:
+                qtd_pagamentos = st.number_input("Em quantas contas ele vai receber?", min_value=1, max_value=10, value=1, step=1)
 
-            with st.form("form_nova_venda", clear_on_submit=True):
-                st.write("#### Dados de Cadastro")
-                c_n, c_p = st.columns(2)
-                with c_n: cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido)
-                with c_p: chave_pix = st.text_input("Chave PIX do Cliente (Opcional se for banco) *")
-                
-                st.write("---")
-                st.write("#### Lançamento de Cartões")
-                cartoes_inputs = []
-                
-                lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas()
-                
-                for i in range(int(qtd_cartoes)):
-                    st.caption(f"**Cartão {i+1}**")
-                    c1, c2, c3, c4 = st.columns(4)
-                    with c1: maq = st.selectbox("Máquina *", lista_maquinas_venda, key=f"maq_{i}")
-                    with c2: band = st.selectbox("Bandeira *", LISTA_BANDEIRAS_ATENDENTE, key=f"band_{i}")
-                    with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}")
-                    with c4: val = st.number_input("Valor Passado no Cartão (R$) *", min_value=0.0, key=f"val_{i}")
-                    cartoes_inputs.append({"Máquina": maq, "Bandeira": band, "Parcelas": parc, "Valor": val})
+            st.write("---")
+            st.write("#### 1. Dados de Cadastro")
+            cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido)
+            
+            st.write("---")
+            st.write("#### 2. Lançamento de Cartões")
+            cartoes_inputs = []
+            
+            lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas()
+            
+            for i in range(int(qtd_cartoes)):
+                st.caption(f"**Cartão {i+1}**")
+                c1, c2, c3, c4 = st.columns(4)
+                with c1: maq = st.selectbox("Máquina *", lista_maquinas_venda, key=f"maq_{i}")
+                with c2: band = st.selectbox("Bandeira *", LISTA_BANDEIRAS_ATENDENTE, key=f"band_{i}")
+                with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}")
+                with c4: val = st.number_input("Valor Passado no Cartão (R$) *", min_value=0.0, key=f"val_{i}")
+                cartoes_inputs.append({"Máquina": maq, "Bandeira": band, "Parcelas": parc, "Valor": val})
 
-                st.write("---")
-                st.write("#### 3. Como o cliente vai receber o dinheiro?")
+            valor_total_cartoes = sum(c["Valor"] for c in cartoes_inputs)
+            st.info(f"💳 **Soma total passando nos cartões:** {formatar_moeda(valor_total_cartoes)}")
+
+            st.write("---")
+            st.write("#### 3. Como o cliente vai receber o dinheiro?")
+            
+            valor_total_cliente = st.number_input("💰 Qual o Valor TOTAL Líquido que o cliente vai receber? (R$) *", min_value=0.0, step=10.0, help="Informe o valor total combinado antes de dividir nas contas.")
+
+            pagamentos_inputs = []
+            soma_distribuida = 0.0
+            
+            for i in range(int(qtd_pagamentos)):
+                st.markdown(f"**Recebedor {i+1}**")
+                col_t, col_v = st.columns(2)
+                with col_t: tipo_pag = st.selectbox("Modalidade *", ["PIX", "Conta Corrente", "Conta Poupança"], key=f"tpag_{i}")
                 
-                qtd_pagamentos = st.number_input("Em quantas contas diferentes o cliente vai receber?", min_value=1, max_value=10, value=1, step=1)
+                # Deixa o atendente livre para digitar, mas mostra em tempo real quanto falta
+                with col_v: val_pag = st.number_input("Valor a Transferir para esta conta (R$) *", min_value=0.0, key=f"vpag_{i}")
+                soma_distribuida += val_pag
                 
-                pagamentos_inputs = []
-                for i in range(int(qtd_pagamentos)):
-                    st.caption(f"**Recebedor {i+1}**")
-                    col_t, col_v = st.columns(2)
-                    with col_t: tipo_pag = st.selectbox("Modalidade *", ["PIX", "Conta Corrente", "Conta Poupança"], key=f"tpag_{i}")
-                    with col_v: val_pag = st.number_input("Valor Padrão a Transferir (R$) *", min_value=0.0, key=f"vpag_{i}")
+                chave = banco = agencia = conta = ""
+                st.caption("👇 Preencha a **Chave PIX** se for PIX. **OU** preencha os dados bancários se for Conta Corrente/Poupança.")
+                if tipo_pag == "PIX":
+                    chave = st.text_input("🔑 Chave PIX *", key=f"chave_{i}")
+                    pagamentos_inputs.append({"Tipo": tipo_pag, "Chave": chave, "Valor": val_pag})
+                else:
+                    col_b, col_ag, col_c = st.columns(3)
+                    with col_b: banco = st.text_input("🏦 Nome do Banco *", key=f"banco_{i}", placeholder="Ex: Itaú, Bradesco...")
+                    with col_ag: agencia = st.text_input("🔢 Agência *", key=f"ag_{i}")
+                    with col_c: conta = st.text_input("🔢 Conta c/ Dígito *", key=f"conta_{i}")
+                    pagamentos_inputs.append({"Tipo": tipo_pag, "Banco": banco, "Agência": agencia, "Conta": conta, "Valor": val_pag})
+
+            # Painel Dinâmico de Validação de Valores
+            st.write("##### ⚖️ Painel de Distribuição")
+            if valor_total_cliente > 0:
+                falta_distribuir = valor_total_cliente - soma_distribuida
+                if falta_distribuir > 0.01:
+                    st.warning(f"⚠️ **Atenção:** Ainda falta distribuir **{formatar_moeda(falta_distribuir)}** nas contas acima.")
+                elif falta_distribuir < -0.01:
+                    st.error(f"🚨 **Erro:** Você distribuiu **{formatar_moeda(abs(falta_distribuir))}** a MAIS do que o Total Combinado!")
+                else:
+                    st.success(f"✅ **Valor 100% Distribuído!**")
+
+            st.write("---")
+            st.write("#### 🎁 Bônus Cartão Fidelidade")
+            fidelidade_opcao = st.radio(
+                "O cliente utilizou o Cartão Fidelidade nesta venda? (Bônus é dado apenas para valores de cartão a partir de R$ 500)",
+                [
+                    "Não", 
+                    "Sim, somar o Bônus ao valor que o cliente vai receber na conta", 
+                    "Sim, o cliente já passou um valor menor na máquina de cartão (Abatido)"
+                ]
+            )
+            
+            bonus_previsto = 0.0
+            if fidelidade_opcao != "Não":
+                bonus_previsto = calcular_bonus(valor_total_cartoes)
+                if bonus_previsto > 0:
+                    st.success(f"🏆 **Bônus Fidelidade Calculado:** + {formatar_moeda(bonus_previsto)}")
+                else:
+                    st.warning("⚠️ Valor da venda abaixo de R$ 500. Nenhum bônus será aplicado.")
+
+            st.write("---")
+            observacoes = st.text_area("Observações Extras")
+            
+            if st.button("Registrar Venda (Enviar para o Financeiro)", type="primary"):
+                
+                cartoes_usados = [c for c in cartoes_inputs if c["Máquina"] != "Selecione..." and c["Bandeira"] != "Selecione..." and c["Valor"] > 0]
+                valor_total_venda = sum(c["Valor"] for c in cartoes_usados)
+
+                bonus_calculado = 0.0
+                usou_fid = False
+                
+                if fidelidade_opcao != "Não":
+                    usou_fid = True
+                    bonus_calculado = calcular_bonus(valor_total_venda)
                     
-                    if tipo_pag == "PIX":
-                        chave = st.text_input("Chave PIX *", key=f"chave_{i}")
-                        pagamentos_inputs.append({"Tipo": tipo_pag, "Chave": chave, "Valor": val_pag})
+                    if "somar o Bônus" in fidelidade_opcao:
+                        if pagamentos_inputs:
+                            pagamentos_inputs[0]["Valor"] += bonus_calculado
+
+                pagamentos_validos = True
+                for p in pagamentos_inputs:
+                    if p["Valor"] <= 0:
+                        pagamentos_validos = False
+                    if p["Tipo"] == "PIX" and not p.get("Chave", "").strip():
+                        pagamentos_validos = False
+                    elif p["Tipo"] != "PIX" and (not p.get("Banco", "").strip() or not p.get("Agência", "").strip() or not p.get("Conta", "").strip()):
+                        pagamentos_validos = False
+                
+                valor_total_pago = sum(p["Valor"] for p in pagamentos_inputs)
+
+                if cliente_nome == "" or cliente_cpf_input == "":
+                    st.error("Preencha o Nome e CPF do cliente.")
+                elif len(cartoes_usados) < int(qtd_cartoes):
+                    st.error("Preencha todos os cartões que solicitou (Máquina, Bandeira e Valor) ou diminua a quantidade no início da tela.")
+                elif not pagamentos_validos:
+                    st.error("Preencha todos os dados das contas de recebimento (Chave, Banco, Agência, etc) e garanta que os valores são maiores que zero.")
+                elif abs(valor_total_cliente - soma_distribuida) > 0.01:
+                    st.error("🚨 Você precisa distribuir exatamente o Valor Total Líquido nas contas antes de prosseguir.")
+                elif valor_total_pago > valor_total_venda + bonus_calculado:
+                    st.error(f"🚨 O valor total que será pago ao cliente não pode ser MAIOR que o valor passado nos cartões + bônus!")
+                else:
+                    maq_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Máquina"]
+                    band_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Bandeira"]
+                    
+                    detalhes_json = json.dumps(cartoes_usados)
+                    detalhes_pag_json = json.dumps(pagamentos_inputs)
+                    
+                    if len(pagamentos_inputs) > 1:
+                        chave_resumo = "Múltiplas Contas"
                     else:
-                        col_b, col_ag, col_c = st.columns(3)
-                        with col_b: banco = st.text_input("Nome do Banco *", key=f"banco_{i}", placeholder="Ex: Itaú, Bradesco...")
-                        with col_ag: agencia = st.text_input("Agência *", key=f"ag_{i}")
-                        with col_c: conta = st.text_input("Conta c/ Dígito *", key=f"conta_{i}")
-                        pagamentos_inputs.append({"Tipo": tipo_pag, "Banco": banco, "Agência": agencia, "Conta": conta, "Valor": val_pag})
-
-                st.write("---")
-                st.write("#### 🎁 Bônus Cartão Fidelidade")
-                fidelidade_opcao = st.radio(
-                    "O cliente utilizou o Cartão Fidelidade nesta venda? (Bônus é dado apenas para valores a partir de R$ 500)",
-                    [
-                        "Não", 
-                        "Sim, somar o Bônus ao valor que o cliente vai receber na conta", 
-                        "Sim, o cliente já passou um valor menor na máquina de cartão (Abatido)"
-                    ]
-                )
+                        p0 = pagamentos_inputs[0]
+                        chave_resumo = f"PIX: {p0['Chave']}" if p0["Tipo"] == "PIX" else f"{p0['Banco']} - Ag:{p0['Agência']} Cc:{p0['Conta']}"
+                    
+                    try:
+                        conn = conectar_banco(); cursor = conn.cursor()
+                        cursor.execute("""
+                            INSERT INTO vendas (
+                                usuario_id, cliente_nome, cliente_cpf, chave_pix_cliente, 
+                                nome_maquina, bandeira_cartao, parcelas, valor_venda, 
+                                valor_pix_cliente, observacoes, status, detalhes_cartoes, detalhes_pagamentos, bonus_fidelidade, usou_fidelidade
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Pendente', %s, %s, %s, %s)
+                        """, (st.session_state.id_usuario, cliente_nome, cliente_cpf_input, chave_resumo, 
+                              maq_principal, band_principal, cartoes_usados[0]["Parcelas"], valor_total_venda, 
+                              valor_total_pago, observacoes, detalhes_json, detalhes_pag_json, bonus_calculado, usou_fid))
+                        conn.commit(); conn.close()
+                        st.success(f"Venda enviada com sucesso! Aguarde a aprovação.")
+                        time.sleep(2) # Mostra o balão de sucesso e depois limpa a tela recarregando
+                        st.rerun()
+                    except Exception as e: st.error(f"Erro ao salvar no banco de dados: {e}")
                 
-                st.write("---")
-                observacoes = st.text_area("Observações Extras")
-                
-                if st.form_submit_button("Registrar Venda (Enviar para o Financeiro)", type="primary"):
-                    
-                    cartoes_usados = [c for c in cartoes_inputs if c["Máquina"] != "Selecione..." and c["Bandeira"] != "Selecione..." and c["Valor"] > 0]
-                    valor_total_venda = sum(c["Valor"] for c in cartoes_usados)
-
-                    bonus_calculado = 0.0
-                    usou_fid = False
-                    
-                    if fidelidade_opcao != "Não":
-                        usou_fid = True
-                        bonus_calculado = calcular_bonus(valor_total_venda)
-                        
-                        if "somar o Bônus" in fidelidade_opcao:
-                            if pagamentos_inputs:
-                                pagamentos_inputs[0]["Valor"] += bonus_calculado
-
-                    pagamentos_validos = True
-                    for p in pagamentos_inputs:
-                        if p["Valor"] <= 0:
-                            pagamentos_validos = False
-                        if p["Tipo"] == "PIX" and not p.get("Chave", "").strip():
-                            pagamentos_validos = False
-                        elif p["Tipo"] != "PIX" and (not p.get("Banco", "").strip() or not p.get("Agência", "").strip() or not p.get("Conta", "").strip()):
-                            pagamentos_validos = False
-                    
-                    valor_total_pago = sum(p["Valor"] for p in pagamentos_inputs)
-
-                    if cliente_nome == "" or cliente_cpf_input == "":
-                        st.error("Preencha o Nome e CPF do cliente.")
-                    elif len(cartoes_usados) < int(qtd_cartoes):
-                        st.error("Preencha todos os cartões que solicitou (Máquina, Bandeira e Valor) ou diminua a quantidade.")
-                    elif not pagamentos_validos:
-                        st.error("Preencha todos os dados das contas de recebimento (Chave, Banco, Agência, etc) e garanta que os valores são maiores que zero.")
-                    elif valor_total_pago > valor_total_venda:
-                        st.error(f"🚨 O valor total que será pago ao cliente ({formatar_moeda(valor_total_pago)}) não pode ser MAIOR que a soma passada nos cartões ({formatar_moeda(valor_total_venda)})!")
-                    else:
-                        maq_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Máquina"]
-                        band_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Bandeira"]
-                        
-                        detalhes_json = json.dumps(cartoes_usados)
-                        detalhes_pag_json = json.dumps(pagamentos_inputs)
-                        
-                        if len(pagamentos_inputs) > 1:
-                            chave_resumo = "Múltiplas Contas"
-                        else:
-                            p0 = pagamentos_inputs[0]
-                            chave_resumo = f"PIX: {p0['Chave']}" if p0["Tipo"] == "PIX" else f"{p0['Banco']} - Ag:{p0['Agência']} Cc:{p0['Conta']}"
-                        
-                        try:
-                            conn = conectar_banco(); cursor = conn.cursor()
-                            cursor.execute("""
-                                INSERT INTO vendas (
-                                    usuario_id, cliente_nome, cliente_cpf, chave_pix_cliente, 
-                                    nome_maquina, bandeira_cartao, parcelas, valor_venda, 
-                                    valor_pix_cliente, observacoes, status, detalhes_cartoes, detalhes_pagamentos, bonus_fidelidade, usou_fidelidade
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Pendente', %s, %s, %s, %s)
-                            """, (st.session_state.id_usuario, cliente_nome, cliente_cpf_input, chave_resumo, 
-                                  maq_principal, band_principal, cartoes_usados[0]["Parcelas"], valor_total_venda, 
-                                  valor_total_pago, observacoes, detalhes_json, detalhes_pag_json, bonus_calculado, usou_fid))
-                            conn.commit(); conn.close()
-                            st.success(f"Venda de {formatar_moeda(valor_total_venda)} enviada para análise!")
-                        except Exception as e: st.error(f"Erro ao salvar no banco de dados: {e}")
-                    
         with aba_consulta:
             st.subheader("Verificar Perfil do Cliente")
             with st.form("form_consulta_atendente"):
