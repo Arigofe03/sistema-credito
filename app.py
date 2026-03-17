@@ -8,8 +8,13 @@ import time
 from fpdf import FPDF
 import plotly.express as px
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
+# --- CONFIGURAÇÃO DA PÁGINA E OCULTAÇÃO DO "CARREGANDO" ---
 st.set_page_config(page_title="Sistema de Gestão de Vendas", layout="wide")
+st.markdown("""
+    <style>
+        [data-testid="stStatusWidget"] {display: none !important;}
+    </style>
+""", unsafe_allow_html=True)
 
 # --- CONEXÃO COM O BANCO DE DADOS NEON ---
 DATABASE_URL = st.secrets["DB_URL"]
@@ -49,25 +54,11 @@ DADOS_TAXAS_PADRAO = [
     ("18x", 15.37, 16.37)
 ]
 
-# --- BUSCA DINÂMICA DE MÁQUINAS ---
-def obter_lista_maquinas():
-    try:
-        conn = conectar_banco()
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT nome_maquina FROM taxas_cartoes_v2 WHERE nome_maquina != 'Múltiplas'")
-        resultados = cursor.fetchall()
-        conn.close()
-        maquinas_db = [r[0] for r in resultados]
-        
-        padroes = ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"]
-        todas = list(set(padroes + maquinas_db))
-        todas.sort()
-        return todas
-    except:
-        return ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"]
-
-# --- INICIALIZAÇÃO AUTOMÁTICA DE TABELAS E COLUNAS ---
-def inicializar_banco():
+# =====================================================================
+# SISTEMA DE CACHE DE ALTA VELOCIDADE
+# =====================================================================
+@st.cache_resource(show_spinner=False)
+def inicializar_banco_uma_vez():
     try:
         conn = conectar_banco()
         cursor = conn.cursor()
@@ -107,7 +98,35 @@ def inicializar_banco():
     except Exception as e:
         pass
 
-inicializar_banco()
+inicializar_banco_uma_vez()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def obter_lista_maquinas_rapido():
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT nome_maquina FROM taxas_cartoes_v2 WHERE nome_maquina != 'Múltiplas'")
+        resultados = cursor.fetchall()
+        conn.close()
+        maquinas_db = [r[0] for r in resultados]
+        padroes = ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"]
+        todas = list(set(padroes + maquinas_db))
+        todas.sort()
+        return todas
+    except:
+        return ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"]
+
+@st.cache_data(ttl=300, show_spinner=False)
+def carregar_tabela_taxas_rapido():
+    try:
+        conn = conectar_banco()
+        df = pd.read_sql_query("SELECT nome_maquina, bandeira, parcelas, taxa_percentual FROM taxas_cartoes_v2", conn)
+        conn.close()
+        return df
+    except:
+        return pd.DataFrame()
+
+# =====================================================================
 
 # --- FUNÇÃO AUXILIAR PARA GERAR PDF ---
 def gerar_pdf(df):
@@ -256,7 +275,7 @@ else:
             aba_fecha, aba_cliente, aba_hist, aba_usuarios, aba_despesas = abas
             aba_dash = aba_fluxo = aba_contas = aba_taxas = None
 
-        # --- DASHBOARD (SÓ ADMIN) ---
+        # --- DASHBOARD ---
         if aba_dash:
             with aba_dash:
                 st.subheader("Visão Geral Financeira da Empresa")
@@ -343,11 +362,10 @@ else:
                                     st.plotly_chart(fig_bar_loja, use_container_width=True)
                 except Exception as e: pass
 
-        # --- FLUXO DE CAIXA (SÓ ADMIN) ---
+        # --- FLUXO DE CAIXA ---
         if aba_fluxo:
             with aba_fluxo:
                 st.subheader("🔁 Extrato de Fluxo de Caixa")
-                
                 col_fc1, col_fc2, col_fc3 = st.columns(3)
                 with col_fc1: fc_ini = st.date_input("Data Inicial:", datetime.date.today() - datetime.timedelta(days=30), format="DD/MM/YYYY", key="fc_ini")
                 with col_fc2: fc_fim = st.date_input("Data Final:", datetime.date.today(), format="DD/MM/YYYY", key="fc_fim")
@@ -386,7 +404,6 @@ else:
                         saldo_final = total_entradas - total_saidas
                         
                         st.divider()
-                        
                         c1, c2, c3 = st.columns(3)
                         c1.metric("🟢 Total de Entradas", formatar_moeda(total_entradas))
                         c2.metric("🔴 Total de Saídas", formatar_moeda(total_saidas))
@@ -405,7 +422,7 @@ else:
                         st.info("Nenhuma movimentação financeira encontrada neste período.")
                 except Exception as e: pass
 
-        # --- FECHAMENTO (COM TRAVA DE LUCRO REAL) ---
+        # --- FECHAMENTO (ADMIN) ---
         with aba_fecha:
             try:
                 conn = conectar_banco()
@@ -481,26 +498,7 @@ else:
                                 st.warning(f"⚠️ Atenção: Não existe taxa cadastrada no sistema para **{maq_c} + {band_c} + {parc_c}**. Assumimos taxa zero.")
                             resumo_html += f"- {maq_c} ({band_c}) em {parc_c} - {formatar_moeda(val_c)}: Taxa de {t_perc}% = **- {formatar_moeda(t_val)}**\n"
                     else:
-                        maq_alvo = venda_dados['Máquina']
-                        bandeira_alvo = venda_dados['Bandeira']
-                        parc_alvo = venda_dados['Parcelas']
-                        
-                        cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = %s AND parcelas = %s", (maq_alvo, bandeira_alvo, parc_alvo))
-                        taxa_resultado = cursor.fetchone()
-                        
-                        if not taxa_resultado:
-                            if bandeira_alvo in ["Visa", "Mastercard"]:
-                                cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = 'Visa/Mastercard' AND parcelas = %s", (maq_alvo, parc_alvo))
-                                taxa_resultado = cursor.fetchone()
-                            elif bandeira_alvo in ["Elo", "Hipercard", "American Express", "Outra"]:
-                                cursor.execute("SELECT taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s AND bandeira = 'Elo/Hiper/Demais' AND parcelas = %s", (maq_alvo, parc_alvo))
-                                taxa_resultado = cursor.fetchone()
-                                
-                        t_perc = float(taxa_resultado[0]) if taxa_resultado else 0.0
-                        total_taxa = venda_raw * (t_perc / 100)
-                        if t_perc == 0.0:
-                            st.warning(f"⚠️ Atenção: Não existe taxa cadastrada para **{maq_alvo} + {bandeira_alvo} + {parc_alvo}**. Assumimos taxa zero.")
-                        resumo_html += f"- Cartão Único: {maq_alvo} ({bandeira_alvo}) em {parc_alvo}: Taxa de {t_perc}% = **- {formatar_moeda(total_taxa)}**\n"
+                        resumo_html += f"- Erro ao ler cartões\n"
 
                     if usou_fid:
                         if bonus_fidelidade > 0:
@@ -519,7 +517,7 @@ else:
                             else:
                                 resumo_html += f"- {p['Tipo']} ({p['Banco']} | Ag: {p['Agência']} | Cc: {p['Conta']}): **- {formatar_moeda(p['Valor'])}**\n"
                     else:
-                        resumo_html += f"- Transferência Legado (Chave/Info: {venda_dados['Chave PIX Destino']}): **- {formatar_moeda(pix_raw)}**\n"
+                        resumo_html += f"- Transferência Legado: **- {formatar_moeda(pix_raw)}**\n"
 
                     resumo_html += f"\n#### 💰 Lucro Líquido Sugerido: {formatar_moeda(lucro_automatico)}\n"
                     st.write("---")
@@ -528,7 +526,7 @@ else:
 
                     with st.form("form_fechamento", clear_on_submit=False):
                         st.write("#### 🛡️ Confirmação de Segurança")
-                        st.info("O sistema calculou o lucro acima com base nas taxas cadastradas. **Se o aplicativo da sua maquininha estiver mostrando um lucro diferente (por causa de mudança de taxa que você não sabia), apague o valor abaixo e digite o Lucro Real.** O valor salvo será cravado no Histórico e não mudará mais.")
+                        st.info("O sistema calculou o lucro acima com base nas taxas cadastradas. **Se o aplicativo da sua maquininha estiver mostrando um lucro diferente (por causa de mudança de taxa que você não sabia), apague o valor abaixo e digite o Lucro Real.**")
                         
                         acao = st.radio("Ação:", ["✅ Aprovar Venda", "❌ Recusar Venda"], horizontal=True)
                         
@@ -582,11 +580,6 @@ else:
                     resumo, perfil_str, df_hist = consultar_perfil_cliente(cpf_busca.strip())
                     if resumo:
                         st.markdown(f"### Cliente: **{resumo['Nome']}** | Perfil: **{perfil_str}**")
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("Tentativas", resumo['Total de Tentativas'])
-                        c2.metric("Aprovadas", resumo['Operações Aprovadas'])
-                        c3.metric("Recusadas", resumo['Operações Recusadas'])
-                        c4.metric("Volume Total", formatar_moeda(resumo['Volume Movimentado']))
                         st.dataframe(df_hist, use_container_width=True, hide_index=True)
                     else: st.warning("Nenhum registro para este CPF.")
 
@@ -847,7 +840,7 @@ else:
                                     st.rerun()
                                 except Exception as e: st.error(f"Erro ao criar máquina: {e}")
 
-                    lista_maquinas_atualizada = obter_lista_maquinas()
+                    lista_maquinas_atualizada = obter_lista_maquinas_rapido()
                     
                     st.write("---")
                     st.write("Selecione a máquina abaixo. A tabela virá preenchida com as taxas atuais. Altere qualquer valor dando dois cliques na célula e depois clique em **Salvar Todas as Taxas**.")
@@ -917,7 +910,7 @@ else:
                 else: st.warning("Acesso restrito.")
 
     # -----------------------------------------
-    # TELA DA ATENDENTE (REATIVA / SEM FORMULÁRIO GERAL)
+    # TELA DA ATENDENTE (100% AUTOMÁTICA E RÁPIDA)
     # -----------------------------------------
     elif st.session_state.perfil == 'atendente':
         st.title(f"Painel da Loja - {st.session_state.loja_usuario}")
@@ -936,8 +929,7 @@ else:
             except: pass
             
             st.write("### 1. Identificação do Cliente")
-            cliente_cpf_input = st.text_input("CPF do Cliente * (Digite e clique fora para buscar o nome)", help="Aperte Enter ou clique fora da caixa após digitar.")
-            
+            cliente_cpf_input = st.text_input("CPF do Cliente *", help="Aperte Enter para buscar o nome do cliente.")
             nome_sugerido = ""
             if cliente_cpf_input:
                 try:
@@ -950,22 +942,21 @@ else:
                     conn.close()
                 except: pass
 
-            st.write("### 2. Configuração da Venda")
-            col_q1, col_q2 = st.columns(2)
-            with col_q1:
-                qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar?", min_value=1, max_value=50, value=1, step=1)
-            with col_q2:
-                qtd_pagamentos = st.number_input("Em quantas contas ele vai receber?", min_value=1, max_value=10, value=1, step=1)
-
-            st.write("---")
-            st.write("#### 1. Dados de Cadastro")
             cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido)
             
             st.write("---")
-            st.write("#### 2. Lançamento de Cartões")
-            cartoes_inputs = []
+            st.write("### 2. Cartões e Cálculo Automático")
             
-            lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas()
+            col_q1, col_q2 = st.columns(2)
+            with col_q1:
+                qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar?", min_value=1, max_value=50, value=1, step=1)
+            
+            cartoes_inputs = []
+            lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas_rapido()
+            df_taxas_calc = carregar_tabela_taxas_rapido()
+            
+            total_passado_cartoes = 0.0
+            total_taxas_calculadas = 0.0
             
             for i in range(int(qtd_cartoes)):
                 st.caption(f"**Cartão {i+1}**")
@@ -974,69 +965,80 @@ else:
                 with c2: band = st.selectbox("Bandeira *", LISTA_BANDEIRAS_ATENDENTE, key=f"band_{i}")
                 with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}")
                 with c4: val = st.number_input("Valor Passado no Cartão (R$) *", min_value=0.0, key=f"val_{i}")
+                
+                taxa_aplicada = 0.0
+                if val > 0 and maq != "Selecione..." and band != "Selecione..." and not df_taxas_calc.empty:
+                    filtro = df_taxas_calc[(df_taxas_calc['nome_maquina'] == maq) & (df_taxas_calc['parcelas'] == parc)]
+                    if not filtro.empty:
+                        f_band = filtro[filtro['bandeira'] == band]
+                        if not f_band.empty:
+                            taxa_aplicada = float(f_band['taxa_percentual'].iloc[0])
+                        else:
+                            bg = "Visa/Mastercard" if band in ["Visa", "Mastercard"] else "Elo/Hiper/Demais"
+                            f_bg = filtro[filtro['bandeira'] == bg]
+                            if not f_bg.empty:
+                                taxa_aplicada = float(f_bg['taxa_percentual'].iloc[0])
+                
+                desconto_rs = val * (taxa_aplicada / 100)
+                total_passado_cartoes += val
+                total_taxas_calculadas += desconto_rs
                 cartoes_inputs.append({"Máquina": maq, "Bandeira": band, "Parcelas": parc, "Valor": val})
 
-            valor_total_cartoes = sum(c["Valor"] for c in cartoes_inputs)
-            st.info(f"💳 **Soma total passando nos cartões:** {formatar_moeda(valor_total_cartoes)}")
+            valor_liquido_maquinas = total_passado_cartoes - total_taxas_calculadas
 
             st.write("---")
-            st.write("#### 3. Como o cliente vai receber o dinheiro?")
+            st.write("#### 🎁 Bônus Cartão Fidelidade")
+            fidelidade_opcao = st.radio(
+                "O cliente utilizou o Cartão Fidelidade nesta venda?",
+                ["Não", "Sim, somar o Bônus ao valor a transferir", "Sim, já abateu o valor no cartão passado"]
+            )
             
-            valor_total_cliente = st.number_input("💰 Qual o Valor TOTAL Líquido que o cliente vai receber? (R$) *", min_value=0.0, step=10.0, help="Informe o valor total combinado antes de dividir nas contas.")
+            bonus_concedido = 0.0
+            if fidelidade_opcao != "Não":
+                bonus_concedido = calcular_bonus(total_passado_cartoes)
+            
+            valor_alvo_cliente = valor_liquido_maquinas
+            if "somar" in fidelidade_opcao:
+                valor_alvo_cliente += bonus_concedido
+                
+            st.info(f"💳 Total Cartões: **{formatar_moeda(total_passado_cartoes)}** | 📉 Desconto de Taxas: **{formatar_moeda(total_taxas_calculadas)}** | 🏆 Bônus: **{formatar_moeda(bonus_concedido)}**\n\n### 💰 LÍQUIDO A PAGAR AO CLIENTE: {formatar_moeda(valor_alvo_cliente)}")
 
+            st.write("---")
+            st.write("### 3. Distribuição nas Contas do Cliente")
+            qtd_pagamentos = st.number_input("Em quantas contas ele vai receber esse valor Líquido?", min_value=1, max_value=10, value=1, step=1)
+            
             pagamentos_inputs = []
             soma_distribuida = 0.0
             
             for i in range(int(qtd_pagamentos)):
                 st.markdown(f"**Recebedor {i+1}**")
                 col_t, col_v = st.columns(2)
-                with col_t: tipo_pag = st.selectbox("Modalidade *", ["PIX", "Conta Corrente", "Conta Poupança"], key=f"tpag_{i}")
+                tipo_pag = col_t.selectbox("Modalidade *", ["PIX", "Conta Corrente", "Conta Poupança"], key=f"tpag_{i}")
+                val_pag = col_v.number_input("Valor a Transferir (R$) *", min_value=0.0, key=f"vpag_{i}")
                 
-                # Deixa o atendente livre para digitar, mas mostra em tempo real quanto falta
-                with col_v: val_pag = st.number_input("Valor a Transferir para esta conta (R$) *", min_value=0.0, key=f"vpag_{i}")
                 soma_distribuida += val_pag
-                
                 chave = banco = agencia = conta = ""
-                st.caption("👇 Preencha a **Chave PIX** se for PIX. **OU** preencha os dados bancários se for Conta Corrente/Poupança.")
+                
                 if tipo_pag == "PIX":
                     chave = st.text_input("🔑 Chave PIX *", key=f"chave_{i}")
                     pagamentos_inputs.append({"Tipo": tipo_pag, "Chave": chave, "Valor": val_pag})
                 else:
                     col_b, col_ag, col_c = st.columns(3)
-                    with col_b: banco = st.text_input("🏦 Nome do Banco *", key=f"banco_{i}", placeholder="Ex: Itaú, Bradesco...")
-                    with col_ag: agencia = st.text_input("🔢 Agência *", key=f"ag_{i}")
-                    with col_c: conta = st.text_input("🔢 Conta c/ Dígito *", key=f"conta_{i}")
+                    banco = col_b.text_input("🏦 Banco *", key=f"banco_{i}", placeholder="Ex: Itaú, Caixa...")
+                    agencia = col_ag.text_input("🔢 Agência *", key=f"ag_{i}")
+                    conta = col_c.text_input("🔢 Conta c/ Dígito *", key=f"conta_{i}")
                     pagamentos_inputs.append({"Tipo": tipo_pag, "Banco": banco, "Agência": agencia, "Conta": conta, "Valor": val_pag})
 
-            # Painel Dinâmico de Validação de Valores
             st.write("##### ⚖️ Painel de Distribuição")
-            if valor_total_cliente > 0:
-                falta_distribuir = valor_total_cliente - soma_distribuida
-                if falta_distribuir > 0.01:
-                    st.warning(f"⚠️ **Atenção:** Ainda falta distribuir **{formatar_moeda(falta_distribuir)}** nas contas acima.")
-                elif falta_distribuir < -0.01:
-                    st.error(f"🚨 **Erro:** Você distribuiu **{formatar_moeda(abs(falta_distribuir))}** a MAIS do que o Total Combinado!")
-                else:
-                    st.success(f"✅ **Valor 100% Distribuído!**")
-
-            st.write("---")
-            st.write("#### 🎁 Bônus Cartão Fidelidade")
-            fidelidade_opcao = st.radio(
-                "O cliente utilizou o Cartão Fidelidade nesta venda? (Bônus é dado apenas para valores de cartão a partir de R$ 500)",
-                [
-                    "Não", 
-                    "Sim, somar o Bônus ao valor que o cliente vai receber na conta", 
-                    "Sim, o cliente já passou um valor menor na máquina de cartão (Abatido)"
-                ]
-            )
+            falta_distribuir = valor_alvo_cliente - soma_distribuida
             
-            bonus_previsto = 0.0
-            if fidelidade_opcao != "Não":
-                bonus_previsto = calcular_bonus(valor_total_cartoes)
-                if bonus_previsto > 0:
-                    st.success(f"🏆 **Bônus Fidelidade Calculado:** + {formatar_moeda(bonus_previsto)}")
+            if total_passado_cartoes > 0:
+                if falta_distribuir > 0.01:
+                    st.warning(f"⚠️ **Atenção:** Ainda falta transferir **{formatar_moeda(falta_distribuir)}** para fechar o valor do cliente.")
+                elif falta_distribuir < -0.01:
+                    st.error(f"🚨 **Erro:** Você está tentando transferir **{formatar_moeda(abs(falta_distribuir))}** a MAIS do que o sistema calculou!")
                 else:
-                    st.warning("⚠️ Valor da venda abaixo de R$ 500. Nenhum bônus será aplicado.")
+                    st.success(f"✅ **100% Distribuído!** Pode registrar a venda no botão abaixo.")
 
             st.write("---")
             observacoes = st.text_area("Observações Extras")
@@ -1044,40 +1046,21 @@ else:
             if st.button("Registrar Venda (Enviar para o Financeiro)", type="primary"):
                 
                 cartoes_usados = [c for c in cartoes_inputs if c["Máquina"] != "Selecione..." and c["Bandeira"] != "Selecione..." and c["Valor"] > 0]
-                valor_total_venda = sum(c["Valor"] for c in cartoes_usados)
-
-                bonus_calculado = 0.0
-                usou_fid = False
                 
-                if fidelidade_opcao != "Não":
-                    usou_fid = True
-                    bonus_calculado = calcular_bonus(valor_total_venda)
-                    
-                    if "somar o Bônus" in fidelidade_opcao:
-                        if pagamentos_inputs:
-                            pagamentos_inputs[0]["Valor"] += bonus_calculado
-
                 pagamentos_validos = True
                 for p in pagamentos_inputs:
-                    if p["Valor"] <= 0:
-                        pagamentos_validos = False
-                    if p["Tipo"] == "PIX" and not p.get("Chave", "").strip():
-                        pagamentos_validos = False
-                    elif p["Tipo"] != "PIX" and (not p.get("Banco", "").strip() or not p.get("Agência", "").strip() or not p.get("Conta", "").strip()):
-                        pagamentos_validos = False
-                
-                valor_total_pago = sum(p["Valor"] for p in pagamentos_inputs)
+                    if p["Valor"] <= 0: pagamentos_validos = False
+                    if p["Tipo"] == "PIX" and not p.get("Chave", "").strip(): pagamentos_validos = False
+                    elif p["Tipo"] != "PIX" and (not p.get("Banco", "").strip() or not p.get("Agência", "").strip() or not p.get("Conta", "").strip()): pagamentos_validos = False
 
                 if cliente_nome == "" or cliente_cpf_input == "":
                     st.error("Preencha o Nome e CPF do cliente.")
                 elif len(cartoes_usados) < int(qtd_cartoes):
-                    st.error("Preencha todos os cartões que solicitou (Máquina, Bandeira e Valor) ou diminua a quantidade no início da tela.")
+                    st.error("Preencha todos os cartões solicitados (Máquina, Bandeira e Valor).")
                 elif not pagamentos_validos:
-                    st.error("Preencha todos os dados das contas de recebimento (Chave, Banco, Agência, etc) e garanta que os valores são maiores que zero.")
-                elif abs(valor_total_cliente - soma_distribuida) > 0.01:
-                    st.error("🚨 Você precisa distribuir exatamente o Valor Total Líquido nas contas antes de prosseguir.")
-                elif valor_total_pago > valor_total_venda + bonus_calculado:
-                    st.error(f"🚨 O valor total que será pago ao cliente não pode ser MAIOR que o valor passado nos cartões + bônus!")
+                    st.error("Preencha todos os dados das contas bancárias e garanta que os valores são maiores que zero.")
+                elif abs(falta_distribuir) > 0.01:
+                    st.error("🚨 Você precisa distribuir exatamente o valor Líquido A Pagar antes de prosseguir.")
                 else:
                     maq_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Máquina"]
                     band_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Bandeira"]
@@ -1092,6 +1075,7 @@ else:
                         chave_resumo = f"PIX: {p0['Chave']}" if p0["Tipo"] == "PIX" else f"{p0['Banco']} - Ag:{p0['Agência']} Cc:{p0['Conta']}"
                     
                     try:
+                        usou_fid = (fidelidade_opcao != "Não")
                         conn = conectar_banco(); cursor = conn.cursor()
                         cursor.execute("""
                             INSERT INTO vendas (
@@ -1100,14 +1084,14 @@ else:
                                 valor_pix_cliente, observacoes, status, detalhes_cartoes, detalhes_pagamentos, bonus_fidelidade, usou_fidelidade
                             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Pendente', %s, %s, %s, %s)
                         """, (st.session_state.id_usuario, cliente_nome, cliente_cpf_input, chave_resumo, 
-                              maq_principal, band_principal, cartoes_usados[0]["Parcelas"], valor_total_venda, 
-                              valor_total_pago, observacoes, detalhes_json, detalhes_pag_json, bonus_calculado, usou_fid))
+                              maq_principal, band_principal, cartoes_usados[0]["Parcelas"], total_passado_cartoes, 
+                              soma_distribuida, observacoes, detalhes_json, detalhes_pag_json, bonus_concedido, usou_fid))
                         conn.commit(); conn.close()
-                        st.success(f"Venda enviada com sucesso! Aguarde a aprovação.")
-                        time.sleep(2) # Mostra o balão de sucesso e depois limpa a tela recarregando
+                        st.success(f"Venda registrada e enviada para o Financeiro!")
+                        time.sleep(2)
                         st.rerun()
                     except Exception as e: st.error(f"Erro ao salvar no banco de dados: {e}")
-                
+                    
         with aba_consulta:
             st.subheader("Verificar Perfil do Cliente")
             with st.form("form_consulta_atendente"):
