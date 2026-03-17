@@ -28,6 +28,17 @@ LISTA_PARCELAS = ["Débito", "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", "9x
 LISTA_BANDEIRAS_ATENDENTE = ["Selecione...", "Visa/Mastercard", "Elo/Hiper/Demais", "Visa", "Mastercard", "Elo", "Hipercard", "American Express", "Outra"]
 LISTA_BANDEIRAS_ADMIN = ["Visa/Mastercard", "Elo/Hiper/Demais", "Visa", "Mastercard", "Elo", "Hipercard", "American Express", "Outra"]
 
+# A MATRIZ DE TAXAS PADRÃO
+DADOS_TAXAS_PADRAO = [
+    ("Débito", 0.99, 1.60), ("1x", 2.99, 3.99), ("2x", 4.09, 5.30),
+    ("3x", 4.78, 5.99), ("4x", 5.47, 6.68), ("5x", 6.14, 7.35),
+    ("6x", 6.81, 8.02), ("7x", 7.67, 9.47), ("8x", 8.33, 10.13),
+    ("9x", 8.98, 10.78), ("10x", 9.63, 11.43), ("11x", 10.26, 12.06),
+    ("12x", 10.90, 12.70), ("13x", 12.32, 13.32), ("14x", 12.94, 13.94),
+    ("15x", 13.56, 14.56), ("16x", 14.17, 15.17), ("17x", 14.77, 15.77),
+    ("18x", 15.37, 16.37)
+]
+
 # --- INICIALIZAÇÃO AUTOMÁTICA DE TABELAS E COLUNAS ---
 def inicializar_banco():
     try:
@@ -54,6 +65,10 @@ def inicializar_banco():
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS bandeira_cartao VARCHAR(50) DEFAULT 'Não Informada';")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS chave_pix_cliente VARCHAR(100) DEFAULT 'Não Informada';")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS detalhes_cartoes TEXT;")
+        
+        # NOVAS COLUNAS PARA AUDITORIA DE FECHAMENTO
+        cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS fechado_por VARCHAR(100);")
+        cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS data_fechamento TIMESTAMP;")
         
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS salario NUMERIC(15,2);")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS data_inicio DATE;")
@@ -82,7 +97,8 @@ def gerar_pdf(df):
     
     pdf.set_font('Arial', 'B', 6)
     colunas = list(df.columns)
-    larguras = [8, 14, 18, 18, 25, 18, 18, 12, 18, 18, 22, 15, 15, 25, 30] 
+    # Ajuste de larguras para comportar as novas colunas
+    larguras = [8, 15, 15, 20, 25, 20, 25, 15, 15, 18, 18, 18, 18, 15, 20, 25] 
     for i, col in enumerate(colunas):
         if i < len(larguras):
             texto_col = str(col).encode('latin-1', 'replace').decode('latin-1')
@@ -437,13 +453,21 @@ else:
                             motivo_recusa = st.text_input("Motivo (Preencha apenas caso recuse)")
                         
                         if st.form_submit_button("Processar Fechamento", type="primary"):
+                            usuario_logado_nome = st.session_state.nome_usuario
+                            
                             if acao == "✅ Aprovar":
                                 if conta_saida == "Nenhuma conta": 
                                     st.error("Cadastre uma Conta PIX primeiro.")
                                 elif lucro_automatico > venda_raw: 
                                     st.error(f"🚨 O Lucro calculado parece incorreto. Verifique as taxas!")
                                 else:
-                                    cursor.execute("UPDATE vendas SET conta_pix_saida=%s, total_lucro=%s, status='Fechada' WHERE id=%s", (conta_saida, lucro_automatico, venda_id_selecionada))
+                                    # REGISTRA QUEM APROVOU E A DATA/HORA
+                                    cursor.execute("""
+                                        UPDATE vendas 
+                                        SET conta_pix_saida=%s, total_lucro=%s, status='Fechada', fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
+                                        WHERE id=%s
+                                    """, (conta_saida, lucro_automatico, usuario_logado_nome, venda_id_selecionada))
+                                    
                                     cursor.execute("INSERT INTO entradas_pix (conta_nome, data_entrada, valor, descricao) VALUES (%s, CURRENT_DATE, %s, %s)", (conta_saida, -pix_raw, f"PIX Venda ID {venda_id_selecionada}"))
                                     conn.commit()
                                     st.success("Venda aprovada com sucesso!")
@@ -452,7 +476,13 @@ else:
                                 if motivo_recusa.strip() == "": 
                                     st.error("Para recusar, é obrigatório preencher o Motivo da recusa.")
                                 else:
-                                    cursor.execute("UPDATE vendas SET status='Recusada', motivo_recusa=%s WHERE id=%s", (motivo_recusa, venda_id_selecionada))
+                                    # REGISTRA QUEM RECUSOU E A DATA/HORA
+                                    cursor.execute("""
+                                        UPDATE vendas 
+                                        SET status='Recusada', motivo_recusa=%s, fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
+                                        WHERE id=%s
+                                    """, (motivo_recusa, usuario_logado_nome, venda_id_selecionada))
+                                    
                                     conn.commit()
                                     st.warning("Venda recusada e enviada de volta à atendente!")
                                     st.rerun()
@@ -487,7 +517,19 @@ else:
                 if st.form_submit_button("🔍 Buscar"):
                     try:
                         conn = conectar_banco()
-                        query_h = "SELECT v.id as \"ID\", to_char(v.data_venda, 'DD/MM/YYYY') as \"Data\", u.loja as \"Loja\", u.nome as \"Atendente\", v.cliente_nome as \"Cliente\", v.cliente_cpf as \"CPF\", v.chave_pix_cliente as \"Chave PIX Destino\", v.nome_maquina as \"Máquina\", v.bandeira_cartao as \"Bandeira\", v.valor_venda as \"Valor Passado\", v.valor_pix_cliente as \"PIX Enviado\", v.conta_pix_saida as \"Conta Saída\", v.total_lucro as \"Lucro da Loja\", v.status as \"Status\" FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s"
+                        # QUERY ATUALIZADA: Puxando as novas colunas de Auditoria (Fechado Por e Data Análise)
+                        query_h = """
+                            SELECT v.id as "ID", to_char(v.data_venda, 'DD/MM/YYYY') as "Data Venda", 
+                                   u.loja as "Loja", u.nome as "Atendente", 
+                                   v.cliente_nome as "Cliente", v.cliente_cpf as "CPF", 
+                                   v.chave_pix_cliente as "Chave PIX Destino", v.nome_maquina as "Máquina", 
+                                   v.bandeira_cartao as "Bandeira", v.valor_venda as "Valor Passado", 
+                                   v.valor_pix_cliente as "PIX Enviado", v.conta_pix_saida as "Conta Saída", 
+                                   v.total_lucro as "Lucro da Loja", v.status as "Status",
+                                   v.fechado_por as "Analisado Por", to_char(v.data_fechamento, 'DD/MM/YYYY HH24:MI') as "Data Análise"
+                            FROM vendas v JOIN usuarios u ON v.usuario_id = u.id 
+                            WHERE DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s
+                        """
                         params = [d_ini, d_fim]
                         if loja_f != "Todas": query_h += " AND u.loja = %s"; params.append(loja_f)
                         if status_f != "Todas": query_h += " AND v.status = %s"; params.append(status_f)
@@ -698,40 +740,79 @@ else:
                 conn.close()
             except: pass
 
-        # --- TAXAS DA MÁQUINA (NOVO PADRÃO COM PARCELAS) ---
+        # --- TAXAS DA MÁQUINA (NOVO PADRÃO COM EDITOR DE PLANILHA) ---
         if aba_taxas:
             with aba_taxas:
                 if st.session_state.perfil == 'admin':
-                    st.subheader("💳 Configurar Taxas de Cartão")
-                    st.write("As taxas inseridas aqui calcularão automaticamente o lucro no momento do Fechamento.")
+                    st.subheader("💳 Painel de Controle de Taxas")
+                    st.write("Selecione a máquina abaixo. A tabela virá preenchida com as taxas padrão. Altere qualquer valor dando dois cliques na célula e depois clique em **Salvar Todas as Taxas**.")
                     
-                    with st.form("form_nova_taxa"):
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1: maq_taxa = st.selectbox("Máquina", ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"])
-                        with col2: bandeira_taxa = st.selectbox("Bandeira", LISTA_BANDEIRAS_ADMIN)
-                        with col3: parc_taxa = st.selectbox("Parcela", LISTA_PARCELAS)
-                        with col4: perc_taxa = st.number_input("Taxa Cobrada (%)", min_value=0.00, max_value=100.00, format="%.2f", help="Ex: 3.99")
-                        
-                        if st.form_submit_button("Salvar Taxa", type="primary"):
-                            try:
-                                conn = conectar_banco(); cursor = conn.cursor()
+                    maq_selecionada = st.selectbox("Selecione a Máquina:", ["Silvio", "Naiara", "Moderninha", "Mercado Pago", "Ton", "Outra"])
+                    
+                    try:
+                        conn = conectar_banco()
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT bandeira, parcelas, taxa_percentual FROM taxas_cartoes_v2 WHERE nome_maquina = %s", (maq_selecionada,))
+                        taxas_db = cursor.fetchall()
+                        conn.close()
+                    except:
+                        taxas_db = []
+
+                    # Monta o DataFrame Base
+                    df_taxas = pd.DataFrame(DADOS_TAXAS_PADRAO, columns=["Parcela", "Visa/Mastercard", "Elo/Hiper/Demais"])
+                    
+                    # Sobrescreve com o que já tem no banco para essa máquina
+                    for bandeira, parcela, taxa in taxas_db:
+                        idx = df_taxas.index[df_taxas['Parcela'] == parcela].tolist()
+                        if idx:
+                            if bandeira == "Visa/Mastercard":
+                                df_taxas.at[idx[0], "Visa/Mastercard"] = float(taxa)
+                            elif bandeira == "Elo/Hiper/Demais":
+                                df_taxas.at[idx[0], "Elo/Hiper/Demais"] = float(taxa)
+                                
+                    # Exibe a Planilha Interativa
+                    df_editado = st.data_editor(
+                        df_taxas,
+                        column_config={
+                            "Parcela": st.column_config.TextColumn("Parcela", disabled=True),
+                            "Visa/Mastercard": st.column_config.NumberColumn("Visa/Mastercard (%)", format="%.2f", min_value=0.0, step=0.01),
+                            "Elo/Hiper/Demais": st.column_config.NumberColumn("Elo/Hiper/Demais (%)", format="%.2f", min_value=0.0, step=0.01)
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key=f"editor_taxas_{maq_selecionada}"
+                    )
+                    
+                    # Botão para salvar TUDO
+                    if st.button("💾 Salvar Todas as Taxas", type="primary"):
+                        try:
+                            conn = conectar_banco()
+                            cursor = conn.cursor()
+                            
+                            for index, row in df_editado.iterrows():
+                                p = row["Parcela"]
+                                t_vm = float(row["Visa/Mastercard"])
+                                t_elo = float(row["Elo/Hiper/Demais"])
+                                
                                 cursor.execute("""
                                     INSERT INTO taxas_cartoes_v2 (nome_maquina, bandeira, parcelas, taxa_percentual) 
                                     VALUES (%s, %s, %s, %s)
                                     ON CONFLICT (nome_maquina, bandeira, parcelas) 
                                     DO UPDATE SET taxa_percentual = EXCLUDED.taxa_percentual;
-                                """, (maq_taxa, bandeira_taxa, parc_taxa, perc_taxa))
-                                conn.commit(); conn.close(); st.success("Taxa salva!"); st.rerun()
-                            except Exception as e: st.error(f"Erro: {e}")
-                            
-                    st.divider()
-                    try:
-                        conn = conectar_banco()
-                        df_taxas = pd.read_sql_query("SELECT nome_maquina as \"Máquina\", bandeira as \"Bandeira\", parcelas as \"Parcela\", taxa_percentual as \"Taxa (%)\" FROM taxas_cartoes_v2 ORDER BY nome_maquina, bandeira, parcelas", conn)
-                        if not df_taxas.empty: st.dataframe(df_taxas, use_container_width=True, hide_index=True)
-                        else: st.info("Nenhuma taxa cadastrada. O lucro automático usará 0%. Vá em frente e cadastre as taxas da sua tabela!")
-                        conn.close()
-                    except: pass
+                                """, (maq_selecionada, "Visa/Mastercard", p, t_vm))
+                                
+                                cursor.execute("""
+                                    INSERT INTO taxas_cartoes_v2 (nome_maquina, bandeira, parcelas, taxa_percentual) 
+                                    VALUES (%s, %s, %s, %s)
+                                    ON CONFLICT (nome_maquina, bandeira, parcelas) 
+                                    DO UPDATE SET taxa_percentual = EXCLUDED.taxa_percentual;
+                                """, (maq_selecionada, "Elo/Hiper/Demais", p, t_elo))
+                                
+                            conn.commit()
+                            conn.close()
+                            st.success(f"✅ Todas as taxas da máquina **{maq_selecionada}** foram salvas/atualizadas no banco de dados!")
+                        except Exception as e:
+                            st.error(f"Erro ao salvar: {e}")
                 else: st.warning("Acesso restrito.")
 
     # -----------------------------------------
