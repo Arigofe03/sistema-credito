@@ -28,13 +28,32 @@ def formatar_moeda(valor):
         return "R$ 0,00"
     return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- FUNÇÃO DE CÁLCULO DE BÔNUS FIDELIDADE ---
+# --- FUNÇÃO DE CÁLCULO DE BÔNUS FIDELIDADE (REGRA EXPLÍCITA) ---
 def calcular_bonus(valor):
-    if valor < 500:
+    if valor < 500.00:
         return 0.0
-    elif valor < 1000:
+    elif valor >= 500.00 and valor < 1000.00:
         return 15.0
+    elif valor >= 1000.00 and valor < 2000.00:
+        return 20.0
+    elif valor >= 2000.00 and valor < 3000.00:
+        return 30.0
+    elif valor >= 3000.00 and valor < 4000.00:
+        return 40.0
+    elif valor >= 4000.00 and valor < 5000.00:
+        return 50.0
+    elif valor >= 5000.00 and valor < 6000.00:
+        return 60.0
+    elif valor >= 6000.00 and valor < 7000.00:
+        return 70.0
+    elif valor >= 7000.00 and valor < 8000.00:
+        return 80.0
+    elif valor >= 8000.00 and valor < 9000.00:
+        return 90.0
+    elif valor >= 9000.00 and valor < 10000.00:
+        return 100.0
     else:
+        # Se passar de 10 mil, a fórmula assume para manter a regra de 10 em 10 infinita
         milhares = int(valor // 1000)
         return 20.0 + ((milhares - 1) * 10.0)
 
@@ -1058,7 +1077,7 @@ else:
                 elif len(cartoes_usados) < int(qtd_cartoes):
                     st.error("Preencha todos os cartões solicitados (Máquina, Bandeira e Valor).")
                 elif not pagamentos_validos:
-                    st.error("Preencha todos os dados das contas bancárias e garanta que os valores são maiores que zero.")
+                    st.error("Preencha todos os dados bancários e garanta que os valores são maiores que zero.")
                 elif abs(falta_distribuir) > 0.01:
                     st.error("🚨 Você precisa distribuir exatamente o valor Líquido A Pagar antes de prosseguir.")
                 else:
