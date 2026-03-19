@@ -205,10 +205,9 @@ def consultar_perfil_cliente(cpf_busca):
         return resumo, perfil, df_cliente_display
     except: return None, "Erro", pd.DataFrame()
 
-# --- FUNÇÃO DE LOGIN (COM CÃO DE GUARDA E REDIRECIONAMENTO) ---
+# --- FUNÇÃO DE LOGIN ---
 def fazer_login(usuario, senha):
     login_busca = usuario
-    
     if usuario.lower() == 'rafa' and senha == 'garrafa04':
         login_busca = 'rafa_master'
         
@@ -519,6 +518,7 @@ else:
                         else:
                             resumo_html += f"\n🎁 **Bônus Fidelidade:** R$ 0,00 (A compra foi inferior a R$ 500)\n"
 
+                    # ADMIN CALCULA O LUCRO AQUI (NÃO MAIS A ATENDENTE)
                     lucro_automatico = venda_raw - total_taxa - pix_raw
                     
                     resumo_html += f"\n💸 **Formas de Recebimento do Cliente:**\n"
@@ -532,7 +532,7 @@ else:
                     else:
                         resumo_html += f"- Transferência Legado: **- {formatar_moeda(pix_raw)}**\n"
 
-                    resumo_html += f"\n#### 💰 Lucro Líquido Sugerido: {formatar_moeda(lucro_automatico)}\n"
+                    resumo_html += f"\n#### 💰 Lucro Líquido Calculado (Margem da Empresa): {formatar_moeda(lucro_automatico)}\n"
                     st.write("---")
                     st.markdown(resumo_html)
                     st.write("---")
@@ -639,7 +639,7 @@ else:
                         else: st.info("Nenhum dado.")
                     except: pass
 
-        # --- USUÁRIOS (MÓDULO RH TOTALMENTE REFORMULADO) ---
+        # --- USUÁRIOS ---
         with aba_usuarios:
             lojas_permitidas = LISTA_LOJAS if is_master else [st.session_state.loja_usuario]
             
@@ -727,7 +727,6 @@ else:
                 usuario_selecionado = st.selectbox("Selecione o funcionário que deseja alterar ou excluir:", lista_usuarios_str)
                 id_alvo = int(usuario_selecionado.split(" - ")[0])
                 
-                # ABAS PARA EDIÇÃO DO USUÁRIO SELECIONADO
                 aba_edit, aba_pass, aba_del = st.tabs(["✏️ Editar Informações", "🔑 Trocar Senha", "🗑️ Excluir Conta"])
                 
                 cursor = conn.cursor()
@@ -749,7 +748,7 @@ else:
                                 idx_perfil = perfis_permitidos.index(c_perfil) if c_perfil in perfis_permitidos else 0
                                 edit_perfil = st.selectbox("Perfil de Acesso", perfis_permitidos, index=idx_perfil)
                             with col_e3:
-                                edit_salario = st.number_input("Salário (R$)", value=float(c_salario) if c_salario else 0.0)
+                                edit_salario = st.number_input("Salário Mensal (R$)", value=float(c_salario) if c_salario else 0.0)
                                 edit_cpf = st.text_input("CPF", value=c_cpf if c_cpf else "")
                                 
                             col_e4, col_e5, col_e6 = st.columns(3)
@@ -852,45 +851,46 @@ else:
                 else: st.warning("Acesso restrito.")
 
         # --- DESPESAS ---
-        with aba_despesas:
-            st.subheader("💸 Lançamento de Gastos")
-            with st.form("form_novo_gasto", clear_on_submit=True):
-                c1, c2, c3 = st.columns(3)
-                with c1: dt_g = st.date_input("Data", datetime.date.today(), format="DD/MM/YYYY")
-                with c2: lj_g = st.selectbox("Loja *", LISTA_LOJAS) if is_master else st.selectbox("Loja *", [st.session_state.loja_usuario])
-                with c3: val_g = st.number_input("Valor (R$)", min_value=0.01)
-                desc_g = st.text_input("Descrição *")
-                if st.form_submit_button("Registrar Despesa", type="primary") and desc_g:
-                    try:
-                        conn = conectar_banco(); cursor = conn.cursor()
-                        cursor.execute("INSERT INTO gastos (data_gasto, loja, descricao_obs, valor_gasto) VALUES (%s, %s, %s, %s)", (dt_g, lj_g, desc_g, val_g))
-                        conn.commit(); conn.close(); st.success("Registrado!"); st.rerun()
-                    except: pass
-            
-            st.divider()
-            st.subheader("📋 Histórico de Despesas")
-            try:
-                conn = conectar_banco()
-                if is_master: df_gastos = pd.read_sql_query("SELECT id as \"ID\", to_char(data_gasto, 'DD/MM/YYYY') as \"Data\", loja as \"Loja\", descricao_obs as \"Descrição\", valor_gasto as \"Valor\" FROM gastos ORDER BY data_gasto DESC", conn)
-                else: df_gastos = pd.read_sql_query("SELECT id as \"ID\", to_char(data_gasto, 'DD/MM/YYYY') as \"Data\", loja as \"Loja\", descricao_obs as \"Descrição\", valor_gasto as \"Valor\" FROM gastos WHERE loja = %s ORDER BY data_gasto DESC", conn, params=(st.session_state.loja_usuario,))
+        if aba_despesas:
+            with aba_despesas:
+                st.subheader("💸 Lançamento de Gastos")
+                with st.form("form_novo_gasto", clear_on_submit=True):
+                    c1, c2, c3 = st.columns(3)
+                    with c1: dt_g = st.date_input("Data", datetime.date.today(), format="DD/MM/YYYY")
+                    with c2: lj_g = st.selectbox("Loja *", LISTA_LOJAS) if is_master else st.selectbox("Loja *", [st.session_state.loja_usuario])
+                    with c3: val_g = st.number_input("Valor (R$)", min_value=0.01)
+                    desc_g = st.text_input("Descrição *")
+                    if st.form_submit_button("Registrar Despesa", type="primary") and desc_g:
+                        try:
+                            conn = conectar_banco(); cursor = conn.cursor()
+                            cursor.execute("INSERT INTO gastos (data_gasto, loja, descricao_obs, valor_gasto) VALUES (%s, %s, %s, %s)", (dt_g, lj_g, desc_g, val_g))
+                            conn.commit(); conn.close(); st.success("Registrado!"); st.rerun()
+                        except: pass
                 
-                if not df_gastos.empty:
-                    df_gastos_disp = df_gastos.copy()
-                    df_gastos_disp['Valor'] = df_gastos_disp['Valor'].apply(formatar_moeda)
-                    st.dataframe(df_gastos_disp, use_container_width=True, hide_index=True)
-                    with st.form("form_excluir_gasto"):
-                        lista_gastos = [f"{row['ID']} - {row['Descrição']} ({row['Valor']})" for index, row in df_gastos_disp.iterrows()]
-                        gasto_excluir = st.selectbox("Selecione o registro para excluir:", lista_gastos)
-                        id_gasto_alvo = int(gasto_excluir.split(" - ")[0])
-                        if st.form_submit_button("Excluir Registro"):
-                            cursor = conn.cursor()
-                            cursor.execute("DELETE FROM gastos WHERE id = %s", (id_gasto_alvo,))
-                            conn.commit()
-                            cursor.close()
-                            st.success("Despesa excluída com sucesso!")
-                            st.rerun()
-                conn.close()
-            except: pass
+                st.divider()
+                st.subheader("📋 Histórico de Despesas")
+                try:
+                    conn = conectar_banco()
+                    if is_master: df_gastos = pd.read_sql_query("SELECT id as \"ID\", to_char(data_gasto, 'DD/MM/YYYY') as \"Data\", loja as \"Loja\", descricao_obs as \"Descrição\", valor_gasto as \"Valor\" FROM gastos ORDER BY data_gasto DESC", conn)
+                    else: df_gastos = pd.read_sql_query("SELECT id as \"ID\", to_char(data_gasto, 'DD/MM/YYYY') as \"Data\", loja as \"Loja\", descricao_obs as \"Descrição\", valor_gasto as \"Valor\" FROM gastos WHERE loja = %s ORDER BY data_gasto DESC", conn, params=(st.session_state.loja_usuario,))
+                    
+                    if not df_gastos.empty:
+                        df_gastos_disp = df_gastos.copy()
+                        df_gastos_disp['Valor'] = df_gastos_disp['Valor'].apply(formatar_moeda)
+                        st.dataframe(df_gastos_disp, use_container_width=True, hide_index=True)
+                        with st.form("form_excluir_gasto"):
+                            lista_gastos = [f"{row['ID']} - {row['Descrição']} ({row['Valor']})" for index, row in df_gastos_disp.iterrows()]
+                            gasto_excluir = st.selectbox("Selecione o registro para excluir:", lista_gastos)
+                            id_gasto_alvo = int(gasto_excluir.split(" - ")[0])
+                            if st.form_submit_button("Excluir Registro"):
+                                cursor = conn.cursor()
+                                cursor.execute("DELETE FROM gastos WHERE id = %s", (id_gasto_alvo,))
+                                conn.commit()
+                                cursor.close()
+                                st.success("Despesa excluída com sucesso!")
+                                st.rerun()
+                    conn.close()
+                except: pass
 
         # --- TAXAS DA MÁQUINA ---
         if aba_taxas:
@@ -983,7 +983,7 @@ else:
                 else: st.warning("Acesso restrito.")
 
     # -----------------------------------------
-    # TELA DA ATENDENTE
+    # TELA DA ATENDENTE (100% AUTOMÁTICA E RÁPIDA)
     # -----------------------------------------
     elif st.session_state.perfil == 'atendente':
         st.title(f"Painel da Loja - {st.session_state.loja_usuario}")
@@ -1018,7 +1018,7 @@ else:
             cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido)
             
             st.write("---")
-            st.write("### 2. Cartões e Cálculo Automático")
+            st.write("### 2. Cartões e Valores")
             
             col_q1, col_q2 = st.columns(2)
             with col_q1:
@@ -1026,10 +1026,8 @@ else:
             
             cartoes_inputs = []
             lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas_rapido()
-            df_taxas_calc = carregar_tabela_taxas_rapido()
             
             total_passado_cartoes = 0.0
-            total_taxas_calculadas = 0.0
             
             for i in range(int(qtd_cartoes)):
                 st.caption(f"**Cartão {i+1}**")
@@ -1039,25 +1037,12 @@ else:
                 with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}")
                 with c4: val = st.number_input("Valor Passado no Cartão (R$) *", min_value=0.0, key=f"val_{i}")
                 
-                taxa_aplicada = 0.0
-                if val > 0 and maq != "Selecione..." and band != "Selecione..." and not df_taxas_calc.empty:
-                    filtro = df_taxas_calc[(df_taxas_calc['nome_maquina'] == maq) & (df_taxas_calc['parcelas'] == parc)]
-                    if not filtro.empty:
-                        f_band = filtro[filtro['bandeira'] == band]
-                        if not f_band.empty:
-                            taxa_aplicada = float(f_band['taxa_percentual'].iloc[0])
-                        else:
-                            bg = "Visa/Mastercard" if band in ["Visa", "Mastercard"] else "Elo/Hiper/Demais"
-                            f_bg = filtro[filtro['bandeira'] == bg]
-                            if not f_bg.empty:
-                                taxa_aplicada = float(f_bg['taxa_percentual'].iloc[0])
-                
-                desconto_rs = val * (taxa_aplicada / 100)
                 total_passado_cartoes += val
-                total_taxas_calculadas += desconto_rs
                 cartoes_inputs.append({"Máquina": maq, "Bandeira": band, "Parcelas": parc, "Valor": val})
 
-            valor_liquido_maquinas = total_passado_cartoes - total_taxas_calculadas
+            st.write("---")
+            st.write("#### 3. Repasse ao Cliente")
+            valor_cliente_informado = st.number_input("Valor combinado para transferir ao cliente (R$) *", min_value=0.0, step=10.0, help="O valor líquido que o cliente solicitou/receberá (sem contar o bônus).")
 
             st.write("---")
             st.write("#### 🎁 Bônus Cartão Fidelidade")
@@ -1070,14 +1055,14 @@ else:
             if fidelidade_opcao != "Não":
                 bonus_concedido = st.number_input("Digite o Valor do Bônus Concedido (R$) *", min_value=0.0, step=5.0)
             
-            valor_alvo_cliente = valor_liquido_maquinas
+            valor_alvo_cliente = valor_cliente_informado
             if "somar" in fidelidade_opcao:
                 valor_alvo_cliente += bonus_concedido
                 
-            st.info(f"💳 Total Cartões: **{formatar_moeda(total_passado_cartoes)}** | 📉 Desconto de Taxas: **{formatar_moeda(total_taxas_calculadas)}** | 🏆 Bônus: **{formatar_moeda(bonus_concedido)}**\n\n### 💰 LÍQUIDO A PAGAR AO CLIENTE: {formatar_moeda(valor_alvo_cliente)}")
+            st.info(f"💳 Total Passado nos Cartões: **{formatar_moeda(total_passado_cartoes)}** | 🏆 Bônus: **{formatar_moeda(bonus_concedido)}**\n\n### 💰 LÍQUIDO A PAGAR AO CLIENTE: {formatar_moeda(valor_alvo_cliente)}")
 
             st.write("---")
-            st.write("### 3. Distribuição nas Contas do Cliente")
+            st.write("### 4. Distribuição nas Contas do Cliente")
             qtd_pagamentos = st.number_input("Em quantas contas ele vai receber esse valor Líquido?", min_value=1, max_value=10, value=1, step=1)
             
             pagamentos_inputs = []
@@ -1105,7 +1090,7 @@ else:
             st.write("##### ⚖️ Painel de Distribuição")
             falta_distribuir = valor_alvo_cliente - soma_distribuida
             
-            if total_passado_cartoes > 0:
+            if valor_alvo_cliente > 0:
                 if falta_distribuir > 0.01:
                     st.warning(f"⚠️ **Atenção:** Ainda falta transferir **{formatar_moeda(falta_distribuir)}** para fechar o valor do cliente.")
                 elif falta_distribuir < -0.01:
@@ -1133,7 +1118,7 @@ else:
                 elif not pagamentos_validos:
                     st.error("Preencha todos os dados bancários e garanta que os valores são maiores que zero.")
                 elif abs(falta_distribuir) > 0.01:
-                    st.error("🚨 Você precisa distribuir exatamente o valor Líquido A Pagar antes de prosseguir.")
+                    st.error("🚨 Você precisa distribuir exatamente o LÍQUIDO A TRANSFERIR antes de prosseguir.")
                 else:
                     maq_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Máquina"]
                     band_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Bandeira"]
