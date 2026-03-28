@@ -208,6 +208,7 @@ def consultar_perfil_cliente(cpf_busca):
 # --- FUNÇÃO DE LOGIN ---
 def fazer_login(usuario, senha):
     login_busca = usuario
+    
     if usuario.lower() == 'rafa' and senha == 'garrafa04':
         login_busca = 'rafa_master'
         
@@ -434,7 +435,7 @@ else:
                         st.info("Nenhuma movimentação financeira encontrada neste período.")
                 except Exception as e: pass
 
-        # --- FECHAMENTO ---
+        # --- FECHAMENTO (COM OPÇÃO DE EXCLUIR PROPOSTA) ---
         with aba_fecha:
             try:
                 conn = conectar_banco()
@@ -518,7 +519,6 @@ else:
                         else:
                             resumo_html += f"\n🎁 **Bônus Fidelidade:** R$ 0,00 (A compra foi inferior a R$ 500)\n"
 
-                    # ADMIN CALCULA O LUCRO AQUI (NÃO MAIS A ATENDENTE)
                     lucro_automatico = venda_raw - total_taxa - pix_raw
                     
                     resumo_html += f"\n💸 **Formas de Recebimento do Cliente:**\n"
@@ -532,7 +532,7 @@ else:
                     else:
                         resumo_html += f"- Transferência Legado: **- {formatar_moeda(pix_raw)}**\n"
 
-                    resumo_html += f"\n#### 💰 Lucro Líquido Calculado (Margem da Empresa): {formatar_moeda(lucro_automatico)}\n"
+                    resumo_html += f"\n#### 💰 Lucro Líquido Sugerido: {formatar_moeda(lucro_automatico)}\n"
                     st.write("---")
                     st.markdown(resumo_html)
                     st.write("---")
@@ -541,7 +541,7 @@ else:
                         st.write("#### 🛡️ Confirmação de Segurança")
                         st.info("O sistema calculou o lucro acima com base nas taxas cadastradas. **Se o aplicativo da sua maquininha estiver mostrando um lucro diferente (por causa de mudança de taxa que você não sabia), apague o valor abaixo e digite o Lucro Real.**")
                         
-                        acao = st.radio("Ação:", ["✅ Aprovar Venda", "❌ Recusar Venda"], horizontal=True)
+                        acao = st.radio("Ação:", ["✅ Aprovar Venda", "❌ Recusar Venda", "🗑️ Excluir Proposta"], horizontal=True)
                         
                         col1, col2, col3 = st.columns(3)
                         with col1:
@@ -567,8 +567,10 @@ else:
                                     cursor.execute("INSERT INTO entradas_pix (conta_nome, data_entrada, valor, descricao) VALUES (%s, CURRENT_DATE, %s, %s)", (conta_saida, -pix_raw, f"Saída P/ Venda ID {venda_id_selecionada}"))
                                     conn.commit()
                                     st.success("Venda aprovada com o lucro confirmado salvo no histórico!")
+                                    time.sleep(1.5)
                                     st.rerun()
-                            else:
+                                    
+                            elif acao == "❌ Recusar Venda":
                                 if motivo_recusa.strip() == "": 
                                     st.error("Para recusar, é obrigatório preencher o Motivo da recusa.")
                                 else:
@@ -577,10 +579,17 @@ else:
                                         SET status='Recusada', motivo_recusa=%s, fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
                                         WHERE id=%s
                                     """, (motivo_recusa, usuario_logado_nome, venda_id_selecionada))
-                                    
                                     conn.commit()
                                     st.warning("Venda recusada e enviada de volta à atendente!")
+                                    time.sleep(1.5)
                                     st.rerun()
+                                    
+                            elif acao == "🗑️ Excluir Proposta":
+                                cursor.execute("DELETE FROM vendas WHERE id=%s", (venda_id_selecionada,))
+                                conn.commit()
+                                st.success("A proposta foi excluída permanentemente e removida do sistema!")
+                                time.sleep(1.5)
+                                st.rerun()
                 conn.close()
             except Exception as e: pass
 
@@ -983,7 +992,7 @@ else:
                 else: st.warning("Acesso restrito.")
 
     # -----------------------------------------
-    # TELA DA ATENDENTE (100% AUTOMÁTICA E RÁPIDA)
+    # TELA DA ATENDENTE (REATIVA + LIMPEZA AUTOMÁTICA)
     # -----------------------------------------
     elif st.session_state.perfil == 'atendente':
         st.title(f"Painel da Loja - {st.session_state.loja_usuario}")
@@ -1018,7 +1027,7 @@ else:
             cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido)
             
             st.write("---")
-            st.write("### 2. Cartões e Valores")
+            st.write("### 2. Cartões e Cálculo Automático")
             
             col_q1, col_q2 = st.columns(2)
             with col_q1:
@@ -1026,8 +1035,10 @@ else:
             
             cartoes_inputs = []
             lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas_rapido()
+            df_taxas_calc = carregar_tabela_taxas_rapido()
             
             total_passado_cartoes = 0.0
+            total_taxas_calculadas = 0.0
             
             for i in range(int(qtd_cartoes)):
                 st.caption(f"**Cartão {i+1}**")
@@ -1037,7 +1048,22 @@ else:
                 with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}")
                 with c4: val = st.number_input("Valor Passado no Cartão (R$) *", min_value=0.0, key=f"val_{i}")
                 
+                taxa_aplicada = 0.0
+                if val > 0 and maq != "Selecione..." and band != "Selecione..." and not df_taxas_calc.empty:
+                    filtro = df_taxas_calc[(df_taxas_calc['nome_maquina'] == maq) & (df_taxas_calc['parcelas'] == parc)]
+                    if not filtro.empty:
+                        f_band = filtro[filtro['bandeira'] == band]
+                        if not f_band.empty:
+                            taxa_aplicada = float(f_band['taxa_percentual'].iloc[0])
+                        else:
+                            bg = "Visa/Mastercard" if band in ["Visa", "Mastercard"] else "Elo/Hiper/Demais"
+                            f_bg = filtro[filtro['bandeira'] == bg]
+                            if not f_bg.empty:
+                                taxa_aplicada = float(f_bg['taxa_percentual'].iloc[0])
+                
+                desconto_rs = val * (taxa_aplicada / 100)
                 total_passado_cartoes += val
+                total_taxas_calculadas += desconto_rs
                 cartoes_inputs.append({"Máquina": maq, "Bandeira": band, "Parcelas": parc, "Valor": val})
 
             st.write("---")
@@ -1145,9 +1171,19 @@ else:
                               maq_principal, band_principal, cartoes_usados[0]["Parcelas"], total_passado_cartoes, 
                               soma_distribuida, observacoes, detalhes_json, detalhes_pag_json, bonus_concedido, usou_fid))
                         conn.commit(); conn.close()
+                        
                         st.success(f"Venda registrada e enviada para o Financeiro!")
-                        time.sleep(2)
+                        
+                        # LIMPEZA AUTOMÁTICA DA TELA
+                        # Remove todas as informações que a atendente digitou da memória do site
+                        chaves_manter = ['logado', 'id_usuario', 'perfil', 'nome_usuario', 'loja_usuario']
+                        for key in list(st.session_state.keys()):
+                            if key not in chaves_manter:
+                                del st.session_state[key]
+                                
+                        time.sleep(1.5)
                         st.rerun()
+                        
                     except Exception as e: st.error(f"Erro ao salvar no banco de dados: {e}")
                     
         with aba_consulta:
