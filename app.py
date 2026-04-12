@@ -93,6 +93,8 @@ def inicializar_banco_uma_vez():
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS usou_fidelidade BOOLEAN DEFAULT FALSE;")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS fechado_por VARCHAR(100);")
         cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS data_fechamento TIMESTAMP;")
+        # ✅ MELHORIA 4: nova coluna para armazenar o valor recebido via PagSeguro
+        cursor.execute("ALTER TABLE vendas ADD COLUMN IF NOT EXISTS valor_pagseguro NUMERIC(15,2) DEFAULT NULL;")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS salario NUMERIC(15,2);")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS data_inicio DATE;")
         cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS data_fim DATE;")
@@ -537,6 +539,36 @@ else:
                     st.markdown(resumo_html)
                     st.write("---")
 
+                    # ✅ MELHORIA 4: Campo para informar o valor recebido via PagSeguro
+                    # O sistema usa o valor da PagSeguro para calcular o lucro real automaticamente,
+                    # eliminando a necessidade de Bia calcular manualmente.
+                    st.write("#### 📲 Valor Recebido via PagSeguro (Opcional)")
+                    st.info(
+                        "Se você já tem o valor exato que **entrou na conta pela PagSeguro**, informe abaixo. "
+                        "O sistema calculará o lucro real automaticamente, sem precisar de cálculo manual."
+                    )
+                    valor_pagseguro = st.number_input(
+                        "Valor que entrou na conta via PagSeguro (R$)",
+                        min_value=0.0,
+                        value=0.0,
+                        step=0.01,
+                        help="Informe o valor exato do relatório PagSeguro. Se não souber agora, deixe 0 e use o lucro sugerido acima.",
+                        key=f"pagseguro_{venda_id_selecionada}"
+                    )
+
+                    # Se informou o valor da PagSeguro, calcula o lucro real com base nele
+                    if valor_pagseguro > 0:
+                        lucro_calculado_pagseguro = valor_pagseguro - pix_raw
+                        st.success(
+                            f"✅ **Lucro calculado pela PagSeguro:** {formatar_moeda(lucro_calculado_pagseguro)} "
+                            f"(Entrou: {formatar_moeda(valor_pagseguro)} − Pago ao cliente: {formatar_moeda(pix_raw)})"
+                        )
+                        lucro_para_confirmar = lucro_calculado_pagseguro
+                    else:
+                        lucro_para_confirmar = lucro_automatico
+
+                    st.write("---")
+
                     with st.form("form_fechamento", clear_on_submit=False):
                         st.write("#### 🛡️ Confirmação de Segurança")
                         st.info("O sistema calculou o lucro acima com base nas taxas cadastradas. **Se o aplicativo da sua maquininha estiver mostrando um lucro diferente (por causa de mudança de taxa que você não sabia), apague o valor abaixo e digite o Lucro Real.**")
@@ -547,49 +579,135 @@ else:
                         with col1:
                             conta_saida = st.selectbox("Sua Conta de Saída", lista_contas)
                         with col2:
-                            lucro_confirmado = st.number_input("Lucro Real Confirmado (R$) *", value=float(lucro_automatico), step=0.01)
+                            lucro_confirmado = st.number_input("Lucro Real Confirmado (R$) *", value=float(lucro_para_confirmar), step=0.01)
                         with col3:
                             motivo_recusa = st.text_input("Motivo (Só para recusa)")
                         
-                        if st.form_submit_button("Processar Fechamento", type="primary"):
+                        # ✅ MELHORIA 2 e 3: Confirmação antes de processar + reset automático via rerun
+                        submitted = st.form_submit_button("Processar Fechamento", type="primary")
+
+                        if submitted:
                             usuario_logado_nome = st.session_state.nome_usuario
                             
                             if acao == "✅ Aprovar Venda":
                                 if conta_saida == "Nenhuma conta": 
                                     st.error("Cadastre uma Conta da Empresa primeiro na aba 'Contas PIX'.")
                                 else:
-                                    cursor.execute("""
-                                        UPDATE vendas 
-                                        SET conta_pix_saida=%s, total_lucro=%s, status='Fechada', fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
-                                        WHERE id=%s
-                                    """, (conta_saida, lucro_confirmado, usuario_logado_nome, venda_id_selecionada))
-                                    
-                                    cursor.execute("INSERT INTO entradas_pix (conta_nome, data_entrada, valor, descricao) VALUES (%s, CURRENT_DATE, %s, %s)", (conta_saida, -pix_raw, f"Saída P/ Venda ID {venda_id_selecionada}"))
-                                    conn.commit()
-                                    st.success("Venda aprovada com o lucro confirmado salvo no histórico!")
-                                    time.sleep(1.5)
+                                    # ✅ MELHORIA 2: Diálogo de confirmação antes de aprovar
+                                    st.session_state['confirmar_fechamento'] = {
+                                        'acao': 'aprovar',
+                                        'conta_saida': conta_saida,
+                                        'lucro_confirmado': lucro_confirmado,
+                                        'venda_id': venda_id_selecionada,
+                                        'pix_raw': pix_raw,
+                                        'valor_pagseguro': valor_pagseguro,
+                                        'usuario': usuario_logado_nome,
+                                    }
                                     st.rerun()
                                     
                             elif acao == "❌ Recusar Venda":
                                 if motivo_recusa.strip() == "": 
                                     st.error("Para recusar, é obrigatório preencher o Motivo da recusa.")
                                 else:
-                                    cursor.execute("""
-                                        UPDATE vendas 
-                                        SET status='Recusada', motivo_recusa=%s, fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
-                                        WHERE id=%s
-                                    """, (motivo_recusa, usuario_logado_nome, venda_id_selecionada))
-                                    conn.commit()
-                                    st.warning("Venda recusada e devolvida para a atendente corrigir!")
-                                    time.sleep(1.5)
+                                    st.session_state['confirmar_fechamento'] = {
+                                        'acao': 'recusar',
+                                        'motivo_recusa': motivo_recusa,
+                                        'venda_id': venda_id_selecionada,
+                                        'usuario': usuario_logado_nome,
+                                    }
                                     st.rerun()
                                     
                             elif "Excluir" in acao:
-                                cursor.execute("DELETE FROM vendas WHERE id = %s", (venda_id_selecionada,))
-                                conn.commit()
-                                st.success("Proposta EXCLUÍDA definitivamente do sistema!")
-                                time.sleep(1.5)
+                                st.session_state['confirmar_fechamento'] = {
+                                    'acao': 'excluir',
+                                    'venda_id': venda_id_selecionada,
+                                    'usuario': usuario_logado_nome,
+                                }
                                 st.rerun()
+
+                    # ✅ MELHORIA 2: Exibe diálogo de confirmação FORA do form para evitar duplo clique
+                    if 'confirmar_fechamento' in st.session_state:
+                        dados_conf = st.session_state['confirmar_fechamento']
+                        acao_conf = dados_conf['acao']
+                        vid_conf = dados_conf['venda_id']
+
+                        if acao_conf == 'aprovar':
+                            st.warning(
+                                f"⚠️ **Confirmar aprovação da Venda ID {vid_conf}?**\n\n"
+                                f"Lucro a registrar: **{formatar_moeda(dados_conf['lucro_confirmado'])}** | "
+                                f"Conta: **{dados_conf['conta_saida']}**"
+                            )
+                        elif acao_conf == 'recusar':
+                            st.warning(f"⚠️ **Confirmar recusa da Venda ID {vid_conf}?**\n\nMotivo: *{dados_conf['motivo_recusa']}*")
+                        elif acao_conf == 'excluir':
+                            st.warning(f"⚠️ **Confirmar exclusão definitiva da Venda ID {vid_conf}?** Esta ação não pode ser desfeita.")
+
+                        col_sim, col_nao = st.columns(2)
+                        with col_sim:
+                            if st.button("✅ Sim, confirmar", type="primary", key="btn_confirmar_sim"):
+                                try:
+                                    conn2 = conectar_banco()
+                                    cursor2 = conn2.cursor()
+
+                                    if acao_conf == 'aprovar':
+                                        cursor2.execute("""
+                                            UPDATE vendas 
+                                            SET conta_pix_saida=%s, total_lucro=%s, status='Fechada',
+                                                fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP,
+                                                valor_pagseguro=%s
+                                            WHERE id=%s
+                                        """, (
+                                            dados_conf['conta_saida'],
+                                            dados_conf['lucro_confirmado'],
+                                            dados_conf['usuario'],
+                                            dados_conf['valor_pagseguro'] if dados_conf['valor_pagseguro'] > 0 else None,
+                                            vid_conf
+                                        ))
+                                        cursor2.execute(
+                                            "INSERT INTO entradas_pix (conta_nome, data_entrada, valor, descricao) VALUES (%s, CURRENT_DATE, %s, %s)",
+                                            (dados_conf['conta_saida'], -dados_conf['pix_raw'], f"Saída P/ Venda ID {vid_conf}")
+                                        )
+                                        conn2.commit()
+                                        conn2.close()
+                                        del st.session_state['confirmar_fechamento']
+                                        st.success("✅ Venda aprovada com sucesso!")
+                                        time.sleep(1)
+                                        # ✅ MELHORIA 3: Reset automático — rerun limpa o formulário
+                                        st.rerun()
+
+                                    elif acao_conf == 'recusar':
+                                        cursor2.execute("""
+                                            UPDATE vendas 
+                                            SET status='Recusada', motivo_recusa=%s,
+                                                fechado_por=%s, data_fechamento=CURRENT_TIMESTAMP 
+                                            WHERE id=%s
+                                        """, (dados_conf['motivo_recusa'], dados_conf['usuario'], vid_conf))
+                                        conn2.commit()
+                                        conn2.close()
+                                        del st.session_state['confirmar_fechamento']
+                                        st.warning("Venda recusada e devolvida para a atendente corrigir!")
+                                        time.sleep(1)
+                                        # ✅ MELHORIA 3: Reset automático
+                                        st.rerun()
+
+                                    elif acao_conf == 'excluir':
+                                        cursor2.execute("DELETE FROM vendas WHERE id = %s", (vid_conf,))
+                                        conn2.commit()
+                                        conn2.close()
+                                        del st.session_state['confirmar_fechamento']
+                                        st.success("Proposta EXCLUÍDA definitivamente do sistema!")
+                                        time.sleep(1)
+                                        # ✅ MELHORIA 3: Reset automático
+                                        st.rerun()
+
+                                except Exception as e:
+                                    st.error(f"Erro ao processar: {e}")
+
+                        with col_nao:
+                            if st.button("❌ Não, cancelar", key="btn_confirmar_nao"):
+                                del st.session_state['confirmar_fechamento']
+                                st.rerun()
+
                 conn.close()
             except Exception as e: pass
 
@@ -648,7 +766,7 @@ else:
                         else: st.info("Nenhum dado.")
                     except: pass
             
-            # --- NOVO PAINEL DE LIMPEZA DE RECUSADAS NO HISTÓRICO ---
+            # --- PAINEL DE LIMPEZA DE RECUSADAS NO HISTÓRICO ---
             st.divider()
             st.subheader("🗑️ Gerenciar Vendas Recusadas")
             st.write("Se uma proposta foi recusada e ficou travada na tela da atendente (lançada errada ou duplicada), você pode excluí-la definitivamente aqui para limpar a tela da loja.")
@@ -714,7 +832,8 @@ else:
                 st.write("**2. Dados Pessoais e Contrato**")
                 col4, col5, col6 = st.columns(3)
                 with col4:
-                    novo_cpf = st.text_input("CPF")
+                    # ✅ MELHORIA 1: CPF não obrigatório — campo com label indicando isso
+                    novo_cpf = st.text_input("CPF (opcional)")
                     novo_rg = st.text_input("RG")
                 with col5:
                     nova_data_inicio = st.date_input("Data de Início", datetime.date.today(), format="DD/MM/YYYY")
@@ -733,7 +852,7 @@ else:
                                 cursor.execute("""
                                     INSERT INTO usuarios (nome, login, senha_hash, loja, perfil, salario, data_inicio, data_fim, endereco, rg, cpf) 
                                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                """, (novo_nome, novo_login, nova_senha, nova_loja, novo_perfil, novo_salario, nova_data_inicio, data_fim_db, novo_endereco, novo_rg, novo_cpf))
+                                """, (novo_nome, novo_login, nova_senha, nova_loja, novo_perfil, novo_salario, nova_data_inicio, data_fim_db, novo_endereco, novo_rg, novo_cpf if novo_cpf.strip() else None))
                                 conn.commit(); conn.close()
                                 st.success(f"✅ Funcionário cadastrado com sucesso!")
                                 time.sleep(1)
@@ -795,7 +914,8 @@ else:
                                 edit_perfil = st.selectbox("Perfil de Acesso", perfis_permitidos, index=idx_perfil)
                             with col_e3:
                                 edit_salario = st.number_input("Salário Mensal (R$)", value=float(c_salario) if c_salario else 0.0)
-                                edit_cpf = st.text_input("CPF", value=c_cpf if c_cpf else "")
+                                # ✅ MELHORIA 1: CPF não obrigatório na edição também
+                                edit_cpf = st.text_input("CPF (opcional)", value=c_cpf if c_cpf else "")
                                 
                             col_e4, col_e5, col_e6 = st.columns(3)
                             with col_e4:
@@ -816,7 +936,7 @@ else:
                                             UPDATE usuarios 
                                             SET nome=%s, login=%s, loja=%s, perfil=%s, salario=%s, cpf=%s, rg=%s, data_inicio=%s, data_fim=%s, endereco=%s
                                             WHERE id=%s
-                                        """, (edit_nome, edit_login, edit_loja, edit_perfil, edit_salario, edit_cpf, edit_rg, edit_dt_ini, d_fim_val, edit_end, id_alvo))
+                                        """, (edit_nome, edit_login, edit_loja, edit_perfil, edit_salario, edit_cpf if edit_cpf.strip() else None, edit_rg, edit_dt_ini, d_fim_val, edit_end, id_alvo))
                                         conn.commit()
                                         st.success("✅ Usuário atualizado com sucesso!")
                                         time.sleep(1)
@@ -1029,7 +1149,7 @@ else:
                 else: st.warning("Acesso restrito.")
 
     # -----------------------------------------
-    # TELA DA ATENDENTE (AGORA COM LIMPEZA AUTOMÁTICA)
+    # TELA DA ATENDENTE
     # -----------------------------------------
     elif st.session_state.perfil == 'atendente':
         st.title(f"Painel da Loja - {st.session_state.loja_usuario}")
@@ -1048,7 +1168,12 @@ else:
             except: pass
             
             st.write("### 1. Identificação do Cliente")
-            cliente_cpf_input = st.text_input("CPF do Cliente *", help="Aperte Enter para buscar o nome do cliente.")
+
+            # ✅ MELHORIA 1: CPF não obrigatório para o cliente também
+            cliente_cpf_input = st.text_input(
+                "CPF do Cliente (opcional)",
+                help="O CPF não é obrigatório. Se o cliente não quiser informar, deixe em branco."
+            )
             nome_sugerido = ""
             if cliente_cpf_input:
                 try:
@@ -1147,6 +1272,8 @@ else:
             st.write("---")
             observacoes = st.text_area("Observações Extras")
             
+            # ✅ MELHORIA 2: Confirmação antes de enviar — o botão agora aciona um estado de confirmação
+            # em vez de já salvar diretamente. Isso evita cliques duplos e vendas duplicadas.
             if st.button("Registrar Venda (Enviar para o Financeiro)", type="primary"):
                 
                 cartoes_usados = [c for c in cartoes_inputs if c["Máquina"] != "Selecione..." and c["Bandeira"] != "Selecione..." and c["Valor"] > 0]
@@ -1157,8 +1284,8 @@ else:
                     if p["Tipo"] == "PIX" and not p.get("Chave", "").strip(): pagamentos_validos = False
                     elif p["Tipo"] != "PIX" and (not p.get("Banco", "").strip() or not p.get("Agência", "").strip() or not p.get("Conta", "").strip()): pagamentos_validos = False
 
-                if cliente_nome == "" or cliente_cpf_input == "":
-                    st.error("Preencha o Nome e CPF do cliente.")
+                if cliente_nome.strip() == "":
+                    st.error("Preencha o Nome do cliente.")
                 elif len(cartoes_usados) < int(qtd_cartoes):
                     st.error("Preencha todos os cartões solicitados (Máquina, Bandeira e Valor).")
                 elif not pagamentos_validos:
@@ -1166,44 +1293,91 @@ else:
                 elif abs(falta_distribuir) > 0.01:
                     st.error("🚨 Você precisa distribuir exatamente o LÍQUIDO A TRANSFERIR antes de prosseguir.")
                 else:
-                    maq_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Máquina"]
-                    band_principal = "Múltiplas" if len(cartoes_usados) > 1 else cartoes_usados[0]["Bandeira"]
-                    
-                    detalhes_json = json.dumps(cartoes_usados)
-                    detalhes_pag_json = json.dumps(pagamentos_inputs)
-                    
-                    if len(pagamentos_inputs) > 1:
-                        chave_resumo = "Múltiplas Contas"
-                    else:
-                        p0 = pagamentos_inputs[0]
-                        chave_resumo = f"PIX: {p0['Chave']}" if p0["Tipo"] == "PIX" else f"{p0['Banco']} - Ag:{p0['Agência']} Cc:{p0['Conta']}"
-                    
-                    try:
-                        usou_fid = (fidelidade_opcao != "Não")
-                        conn = conectar_banco(); cursor = conn.cursor()
-                        cursor.execute("""
-                            INSERT INTO vendas (
-                                usuario_id, cliente_nome, cliente_cpf, chave_pix_cliente, 
-                                nome_maquina, bandeira_cartao, parcelas, valor_venda, 
-                                valor_pix_cliente, observacoes, status, detalhes_cartoes, detalhes_pagamentos, bonus_fidelidade, usou_fidelidade
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Pendente', %s, %s, %s, %s)
-                        """, (st.session_state.id_usuario, cliente_nome, cliente_cpf_input, chave_resumo, 
-                              maq_principal, band_principal, cartoes_usados[0]["Parcelas"], total_passado_cartoes, 
-                              soma_distribuida, observacoes, detalhes_json, detalhes_pag_json, bonus_concedido, usou_fid))
-                        conn.commit(); conn.close()
-                        
-                        st.success(f"✅ Venda registrada e enviada para o Financeiro com sucesso!")
-                        
-                        # LIMPEZA AUTOMÁTICA DA TELA DA ATENDENTE
-                        chaves_manter = ['logado', 'id_usuario', 'perfil', 'nome_usuario', 'loja_usuario']
-                        for key in list(st.session_state.keys()):
-                            if key not in chaves_manter:
-                                del st.session_state[key]
-                                
-                        time.sleep(1.5)
+                    # Armazena os dados no session_state para a confirmação
+                    st.session_state['confirmar_venda'] = {
+                        'cliente_nome': cliente_nome,
+                        'cliente_cpf': cliente_cpf_input,
+                        'cartoes_usados': cartoes_usados,
+                        'pagamentos_inputs': pagamentos_inputs,
+                        'total_passado_cartoes': total_passado_cartoes,
+                        'soma_distribuida': soma_distribuida,
+                        'bonus_concedido': bonus_concedido,
+                        'fidelidade_opcao': fidelidade_opcao,
+                        'observacoes': observacoes,
+                        'qtd_cartoes': int(qtd_cartoes),
+                    }
+                    st.rerun()
+
+            # ✅ MELHORIA 2: Exibe caixa de confirmação se o botão foi clicado
+            if 'confirmar_venda' in st.session_state:
+                dados_v = st.session_state['confirmar_venda']
+                st.divider()
+                st.warning(
+                    f"⚠️ **Confirmar envio da venda?**\n\n"
+                    f"Cliente: **{dados_v['cliente_nome']}** | "
+                    f"Valor passado: **{formatar_moeda(dados_v['total_passado_cartoes'])}** | "
+                    f"Líquido ao cliente: **{formatar_moeda(dados_v['soma_distribuida'])}**\n\n"
+                    f"Após confirmar, a venda será enviada ao financeiro e a tela será limpa."
+                )
+                col_ok, col_cancel = st.columns(2)
+
+                with col_ok:
+                    if st.button("✅ Sim, enviar para o financeiro", key="btn_confirmar_venda"):
+                        try:
+                            d = dados_v
+                            maq_principal = "Múltiplas" if len(d['cartoes_usados']) > 1 else d['cartoes_usados'][0]["Máquina"]
+                            band_principal = "Múltiplas" if len(d['cartoes_usados']) > 1 else d['cartoes_usados'][0]["Bandeira"]
+                            detalhes_json = json.dumps(d['cartoes_usados'])
+                            detalhes_pag_json = json.dumps(d['pagamentos_inputs'])
+                            
+                            if len(d['pagamentos_inputs']) > 1:
+                                chave_resumo = "Múltiplas Contas"
+                            else:
+                                p0 = d['pagamentos_inputs'][0]
+                                chave_resumo = f"PIX: {p0['Chave']}" if p0["Tipo"] == "PIX" else f"{p0['Banco']} - Ag:{p0['Agência']} Cc:{p0['Conta']}"
+                            
+                            usou_fid = (d['fidelidade_opcao'] != "Não")
+                            conn = conectar_banco(); cursor = conn.cursor()
+                            cursor.execute("""
+                                INSERT INTO vendas (
+                                    usuario_id, cliente_nome, cliente_cpf, chave_pix_cliente, 
+                                    nome_maquina, bandeira_cartao, parcelas, valor_venda, 
+                                    valor_pix_cliente, observacoes, status, detalhes_cartoes,
+                                    detalhes_pagamentos, bonus_fidelidade, usou_fidelidade
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Pendente', %s, %s, %s, %s)
+                            """, (
+                                st.session_state.id_usuario,
+                                d['cliente_nome'],
+                                d['cliente_cpf'] if d['cliente_cpf'].strip() else None,
+                                chave_resumo, 
+                                maq_principal, band_principal,
+                                d['cartoes_usados'][0]["Parcelas"],
+                                d['total_passado_cartoes'], 
+                                d['soma_distribuida'],
+                                d['observacoes'],
+                                detalhes_json, detalhes_pag_json,
+                                d['bonus_concedido'], usou_fid
+                            ))
+                            conn.commit(); conn.close()
+                            
+                            st.success("✅ Venda registrada e enviada para o Financeiro com sucesso!")
+                            
+                            # ✅ MELHORIA 3: Limpa a confirmação e recarrega a tela zerada
+                            del st.session_state['confirmar_venda']
+                            chaves_manter = ['logado', 'id_usuario', 'perfil', 'nome_usuario', 'loja_usuario']
+                            for key in list(st.session_state.keys()):
+                                if key not in chaves_manter:
+                                    del st.session_state[key]
+                            time.sleep(1.5)
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"Erro ao salvar no banco de dados: {e}")
+
+                with col_cancel:
+                    if st.button("❌ Não, voltar e corrigir", key="btn_cancelar_venda"):
+                        del st.session_state['confirmar_venda']
                         st.rerun()
-                        
-                    except Exception as e: st.error(f"Erro ao salvar no banco de dados: {e}")
                     
         with aba_consulta:
             st.subheader("Verificar Perfil do Cliente")
