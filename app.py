@@ -1172,7 +1172,8 @@ else:
             # ✅ MELHORIA 1: CPF não obrigatório para o cliente também
             cliente_cpf_input = st.text_input(
                 "CPF do Cliente (opcional)",
-                help="O CPF não é obrigatório. Se o cliente não quiser informar, deixe em branco."
+                help="O CPF não é obrigatório. Se o cliente não quiser informar, deixe em branco.",
+                key="input_cpf_cliente"
             )
             nome_sugerido = ""
             if cliente_cpf_input:
@@ -1186,14 +1187,14 @@ else:
                     conn.close()
                 except: pass
 
-            cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido)
+            cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido, key="input_nome_cliente")
             
             st.write("---")
             st.write("### 2. Cartões e Valores")
             
             col_q1, col_q2 = st.columns(2)
             with col_q1:
-                qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar?", min_value=1, max_value=50, value=1, step=1)
+                qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar?", min_value=1, max_value=50, value=1, step=1, key="input_qtd_cartoes")
             
             cartoes_inputs = []
             lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas_rapido()
@@ -1213,18 +1214,19 @@ else:
 
             st.write("---")
             st.write("#### 3. Repasse ao Cliente")
-            valor_cliente_informado = st.number_input("Valor combinado para transferir ao cliente (R$) *", min_value=0.0, step=10.0, help="O valor líquido que o cliente solicitou/receberá (sem contar o bônus).")
+            valor_cliente_informado = st.number_input("Valor combinado para transferir ao cliente (R$) *", min_value=0.0, step=10.0, help="O valor líquido que o cliente solicitou/receberá (sem contar o bônus).", key="input_valor_cliente")
 
             st.write("---")
             st.write("#### 🎁 Bônus Cartão Fidelidade")
             fidelidade_opcao = st.radio(
                 "O cliente utilizou o Cartão Fidelidade nesta venda?",
-                ["Não", "Sim, somar o Bônus ao valor a transferir", "Sim, já abateu o valor no cartão passado"]
+                ["Não", "Sim, somar o Bônus ao valor a transferir", "Sim, já abateu o valor no cartão passado"],
+                key="input_fidelidade_opcao"
             )
             
             bonus_concedido = 0.0
             if fidelidade_opcao != "Não":
-                bonus_concedido = st.number_input("Digite o Valor do Bônus Concedido (R$) *", min_value=0.0, step=5.0)
+                bonus_concedido = st.number_input("Digite o Valor do Bônus Concedido (R$) *", min_value=0.0, step=5.0, key="input_bonus_concedido")
             
             valor_alvo_cliente = valor_cliente_informado
             if "somar" in fidelidade_opcao:
@@ -1234,7 +1236,7 @@ else:
 
             st.write("---")
             st.write("### 4. Distribuição nas Contas do Cliente")
-            qtd_pagamentos = st.number_input("Em quantas contas ele vai receber esse valor Líquido?", min_value=1, max_value=10, value=1, step=1)
+            qtd_pagamentos = st.number_input("Em quantas contas ele vai receber esse valor Líquido?", min_value=1, max_value=10, value=1, step=1, key="input_qtd_pagamentos")
             
             pagamentos_inputs = []
             soma_distribuida = 0.0
@@ -1270,7 +1272,7 @@ else:
                     st.success(f"✅ **100% Distribuído!** Pode registrar a venda no botão abaixo.")
 
             st.write("---")
-            observacoes = st.text_area("Observações Extras")
+            observacoes = st.text_area("Observações Extras", key="input_observacoes")
             
             # ✅ MELHORIA 2: Confirmação antes de enviar — o botão agora aciona um estado de confirmação
             # em vez de já salvar diretamente. Isso evita cliques duplos e vendas duplicadas.
