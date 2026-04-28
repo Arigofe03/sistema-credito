@@ -229,6 +229,9 @@ if 'logado' not in st.session_state:
     st.session_state.nome_usuario = ""
     st.session_state.loja_usuario = ""
 
+if 'form_reset_counter' not in st.session_state:
+    st.session_state.form_reset_counter = 0
+
 # --- TELA DE LOGIN ---
 if not st.session_state.logado:
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -1168,12 +1171,13 @@ else:
             except: pass
             
             st.write("### 1. Identificação do Cliente")
+            rc = st.session_state.form_reset_counter
 
             # ✅ MELHORIA 1: CPF não obrigatório para o cliente também
             cliente_cpf_input = st.text_input(
                 "CPF do Cliente (opcional)",
                 help="O CPF não é obrigatório. Se o cliente não quiser informar, deixe em branco.",
-                key="input_cpf_cliente"
+                key=f"input_cpf_cliente_{rc}"
             )
             nome_sugerido = ""
             if cliente_cpf_input:
@@ -1187,14 +1191,14 @@ else:
                     conn.close()
                 except: pass
 
-            cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido, key="input_nome_cliente")
+            cliente_nome = st.text_input("Nome Completo *", value=nome_sugerido, key=f"input_nome_cliente_{rc}")
             
             st.write("---")
             st.write("### 2. Cartões e Valores")
             
             col_q1, col_q2 = st.columns(2)
             with col_q1:
-                qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar?", min_value=1, max_value=50, value=1, step=1, key="input_qtd_cartoes")
+                qtd_cartoes = st.number_input("Quantos cartões o cliente vai passar?", min_value=1, max_value=50, value=1, step=1, key=f"input_qtd_cartoes_{rc}")
             
             cartoes_inputs = []
             lista_maquinas_venda = ["Selecione..."] + obter_lista_maquinas_rapido()
@@ -1204,29 +1208,29 @@ else:
             for i in range(int(qtd_cartoes)):
                 st.caption(f"**Cartão {i+1}**")
                 c1, c2, c3, c4 = st.columns(4)
-                with c1: maq = st.selectbox("Máquina *", lista_maquinas_venda, key=f"maq_{i}")
-                with c2: band = st.selectbox("Bandeira *", LISTA_BANDEIRAS_ATENDENTE, key=f"band_{i}")
-                with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}")
-                with c4: val = st.number_input("Valor Passado no Cartão (R$) *", min_value=0.0, key=f"val_{i}")
+                with c1: maq = st.selectbox("Máquina *", lista_maquinas_venda, key=f"maq_{i}_{rc}")
+                with c2: band = st.selectbox("Bandeira *", LISTA_BANDEIRAS_ATENDENTE, key=f"band_{i}_{rc}")
+                with c3: parc = st.selectbox("Parcelas", LISTA_PARCELAS, key=f"parc_{i}_{rc}")
+                with c4: val = st.number_input("Valor Passado no Cartão (R$) *", min_value=0.0, key=f"val_{i}_{rc}")
                 
                 total_passado_cartoes += val
                 cartoes_inputs.append({"Máquina": maq, "Bandeira": band, "Parcelas": parc, "Valor": val})
 
             st.write("---")
             st.write("#### 3. Repasse ao Cliente")
-            valor_cliente_informado = st.number_input("Valor combinado para transferir ao cliente (R$) *", min_value=0.0, step=10.0, help="O valor líquido que o cliente solicitou/receberá (sem contar o bônus).", key="input_valor_cliente")
+            valor_cliente_informado = st.number_input("Valor combinado para transferir ao cliente (R$) *", min_value=0.0, step=10.0, help="O valor líquido que o cliente solicitou/receberá (sem contar o bônus).", key=f"input_valor_cliente_{rc}")
 
             st.write("---")
             st.write("#### 🎁 Bônus Cartão Fidelidade")
             fidelidade_opcao = st.radio(
                 "O cliente utilizou o Cartão Fidelidade nesta venda?",
                 ["Não", "Sim, somar o Bônus ao valor a transferir", "Sim, já abateu o valor no cartão passado"],
-                key="input_fidelidade_opcao"
+                key=f"input_fidelidade_opcao_{rc}"
             )
             
             bonus_concedido = 0.0
             if fidelidade_opcao != "Não":
-                bonus_concedido = st.number_input("Digite o Valor do Bônus Concedido (R$) *", min_value=0.0, step=5.0, key="input_bonus_concedido")
+                bonus_concedido = st.number_input("Digite o Valor do Bônus Concedido (R$) *", min_value=0.0, step=5.0, key=f"input_bonus_concedido_{rc}")
             
             valor_alvo_cliente = valor_cliente_informado
             if "somar" in fidelidade_opcao:
@@ -1236,7 +1240,7 @@ else:
 
             st.write("---")
             st.write("### 4. Distribuição nas Contas do Cliente")
-            qtd_pagamentos = st.number_input("Em quantas contas ele vai receber esse valor Líquido?", min_value=1, max_value=10, value=1, step=1, key="input_qtd_pagamentos")
+            qtd_pagamentos = st.number_input("Em quantas contas ele vai receber esse valor Líquido?", min_value=1, max_value=10, value=1, step=1, key=f"input_qtd_pagamentos_{rc}")
             
             pagamentos_inputs = []
             soma_distribuida = 0.0
@@ -1244,20 +1248,20 @@ else:
             for i in range(int(qtd_pagamentos)):
                 st.markdown(f"**Recebedor {i+1}**")
                 col_t, col_v = st.columns(2)
-                tipo_pag = col_t.selectbox("Modalidade *", ["PIX", "Conta Corrente", "Conta Poupança"], key=f"tpag_{i}")
-                val_pag = col_v.number_input("Valor a Transferir (R$) *", min_value=0.0, key=f"vpag_{i}")
+                tipo_pag = col_t.selectbox("Modalidade *", ["PIX", "Conta Corrente", "Conta Poupança"], key=f"tpag_{i}_{rc}")
+                val_pag = col_v.number_input("Valor a Transferir (R$) *", min_value=0.0, key=f"vpag_{i}_{rc}")
                 
                 soma_distribuida += val_pag
                 chave = banco = agencia = conta = ""
                 
                 if tipo_pag == "PIX":
-                    chave = st.text_input("🔑 Chave PIX *", key=f"chave_{i}")
+                    chave = st.text_input("🔑 Chave PIX *", key=f"chave_{i}_{rc}")
                     pagamentos_inputs.append({"Tipo": tipo_pag, "Chave": chave, "Valor": val_pag})
                 else:
                     col_b, col_ag, col_c = st.columns(3)
-                    banco = col_b.text_input("🏦 Banco *", key=f"banco_{i}", placeholder="Ex: Itaú, Caixa...")
-                    agencia = col_ag.text_input("🔢 Agência *", key=f"ag_{i}")
-                    conta = col_c.text_input("🔢 Conta c/ Dígito *", key=f"conta_{i}")
+                    banco = col_b.text_input("🏦 Banco *", key=f"banco_{i}_{rc}", placeholder="Ex: Itaú, Caixa...")
+                    agencia = col_ag.text_input("🔢 Agência *", key=f"ag_{i}_{rc}")
+                    conta = col_c.text_input("🔢 Conta c/ Dígito *", key=f"conta_{i}_{rc}")
                     pagamentos_inputs.append({"Tipo": tipo_pag, "Banco": banco, "Agência": agencia, "Conta": conta, "Valor": val_pag})
 
             st.write("##### ⚖️ Painel de Distribuição")
@@ -1272,7 +1276,7 @@ else:
                     st.success(f"✅ **100% Distribuído!** Pode registrar a venda no botão abaixo.")
 
             st.write("---")
-            observacoes = st.text_area("Observações Extras", key="input_observacoes")
+            observacoes = st.text_area("Observações Extras", key=f"input_observacoes_{rc}")
             
             # ✅ MELHORIA 2: Confirmação antes de enviar — o botão agora aciona um estado de confirmação
             # em vez de já salvar diretamente. Isso evita cliques duplos e vendas duplicadas.
@@ -1314,11 +1318,22 @@ else:
             if 'confirmar_venda' in st.session_state:
                 dados_v = st.session_state['confirmar_venda']
                 st.divider()
+                detalhes_pags_conf = ""
+                for p_conf in dados_v['pagamentos_inputs']:
+                    if p_conf["Tipo"] == "PIX":
+                        detalhes_pags_conf += f"\n  - PIX ({p_conf.get('Chave', '')}): **{formatar_moeda(p_conf['Valor'])}**"
+                    else:
+                        detalhes_pags_conf += (
+                            f"\n  - {p_conf['Tipo']} ({p_conf.get('Banco', '')} | "
+                            f"Ag: {p_conf.get('Agência', '')} | Cc: {p_conf.get('Conta', '')}): "
+                            f"**{formatar_moeda(p_conf['Valor'])}**"
+                        )
                 st.warning(
                     f"⚠️ **Confirmar envio da venda?**\n\n"
                     f"Cliente: **{dados_v['cliente_nome']}** | "
-                    f"Valor passado: **{formatar_moeda(dados_v['total_passado_cartoes'])}** | "
-                    f"Líquido ao cliente: **{formatar_moeda(dados_v['soma_distribuida'])}**\n\n"
+                    f"Valor passado nos cartões: **{formatar_moeda(dados_v['total_passado_cartoes'])}**\n\n"
+                    f"**Repasse ao cliente:**{detalhes_pags_conf}\n\n"
+                    f"**Total líquido ao cliente: {formatar_moeda(dados_v['soma_distribuida'])}**\n\n"
                     f"Após confirmar, a venda será enviada ao financeiro e a tela será limpa."
                 )
                 col_ok, col_cancel = st.columns(2)
@@ -1363,10 +1378,10 @@ else:
                             conn.commit(); conn.close()
                             
                             st.success("✅ Venda registrada e enviada para o Financeiro com sucesso!")
-                            
-                            # ✅ MELHORIA 3: Limpa a confirmação e recarrega a tela zerada
-                            del st.session_state['confirmar_venda']
-                            chaves_manter = ['logado', 'id_usuario', 'perfil', 'nome_usuario', 'loja_usuario']
+
+                            # Incrementa o contador para forçar recriação dos widgets (limpa os campos)
+                            st.session_state.form_reset_counter = st.session_state.get('form_reset_counter', 0) + 1
+                            chaves_manter = ['logado', 'id_usuario', 'perfil', 'nome_usuario', 'loja_usuario', 'form_reset_counter']
                             for key in list(st.session_state.keys()):
                                 if key not in chaves_manter:
                                     del st.session_state[key]
