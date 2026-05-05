@@ -443,6 +443,13 @@ else:
                     
                     df_entradas = pd.read_sql_query(q_entradas, conn, params=params)
                     df_saidas = pd.read_sql_query(q_saidas, conn, params=params)
+                    if is_master and fc_loja != "Todas":
+                        q_maquinas = "SELECT v.nome_maquina as maquina, SUM(v.total_lucro) as lucro FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE v.status = 'Fechada' AND u.loja = %s AND DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s GROUP BY v.nome_maquina ORDER BY lucro DESC"
+                    elif is_master:
+                        q_maquinas = "SELECT v.nome_maquina as maquina, SUM(v.total_lucro) as lucro FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE v.status = 'Fechada' AND DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s GROUP BY v.nome_maquina ORDER BY lucro DESC"
+                    else:
+                        q_maquinas = "SELECT v.nome_maquina as maquina, SUM(v.total_lucro) as lucro FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE v.status = 'Fechada' AND u.loja = %s AND DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s GROUP BY v.nome_maquina ORDER BY lucro DESC"
+                    df_maquinas = pd.read_sql_query(q_maquinas, conn, params=params)
                     conn.close()
                     
                     df_fluxo = pd.concat([df_entradas, df_saidas], ignore_index=True)
@@ -465,7 +472,13 @@ else:
                         df_grafico = pd.DataFrame({"Categoria": ["Entradas (Receitas)", "Saídas (Despesas)"], "Valor (R$)": [total_entradas, total_saidas], "Cor": ["#28B463", "#E74C3C"]})
                         fig_fc = px.bar(df_grafico, x="Categoria", y="Valor (R$)", color="Categoria", color_discrete_map={"Entradas (Receitas)": "#28B463", "Saídas (Despesas)": "#E74C3C"}, title="Comparativo: O que entrou vs O que saiu")
                         st.plotly_chart(fig_fc, use_container_width=True)
-                        
+
+                        if not df_maquinas.empty:
+                            fig_maq = px.bar(df_maquinas, x="maquina", y="lucro", title="Lucro por Máquina", labels={"maquina": "Máquina", "lucro": "Lucro (R$)"}, color="maquina", text_auto=True)
+                            fig_maq.update_traces(texttemplate="R$ %{y:,.2f}", textposition="outside")
+                            fig_maq.update_layout(showlegend=False, yaxis_tickprefix="R$ ", yaxis_tickformat=",.2f")
+                            st.plotly_chart(fig_maq, use_container_width=True)
+
                         st.write("### 📖 Livro Razão (Extrato Detalhado)")
                         df_fluxo_display = df_fluxo[['Data', 'tipo', 'descricao', 'loja', 'valor']].copy()
                         df_fluxo_display.columns = ['Data', 'Tipo', 'Descrição', 'Loja', 'Valor (R$)']
@@ -583,28 +596,29 @@ else:
                         "O sistema somará tudo e calculará o lucro real automaticamente."
                     )
                     total_pagseguro = 0.0
+                    cartoes_pag = []
                     if pd.notna(detalhes_json) and detalhes_json != "":
                         try:
-                            cartoes_pag = json.loads(detalhes_json)
-                            for i_pag, c_pag in enumerate(cartoes_pag):
-                                label_pag = f"{c_pag['Máquina']} ({c_pag['Bandeira']}) em {c_pag['Parcelas']} — Passado: {formatar_moeda(float(c_pag['Valor']))}"
-                                v_pag = st.number_input(
-                                    f"💳 {label_pag}",
-                                    min_value=0.0,
-                                    value=0.0,
-                                    step=0.01,
-                                    help="Informe o valor que entrou nesta máquina segundo o relatório PagSeguro. Deixe 0 se não souber.",
-                                    key=f"pagseguro_{venda_id_selecionada}_{i_pag}"
-                                )
-                                total_pagseguro += v_pag
-                            if len(cartoes_pag) > 1 and total_pagseguro > 0:
-                                st.caption(f"Total PagSeguro informado: **{formatar_moeda(total_pagseguro)}**")
+                            parsed = json.loads(detalhes_json)
+                            if isinstance(parsed, list) and len(parsed) > 0:
+                                cartoes_pag = parsed
                         except:
-                            total_pagseguro = st.number_input(
-                                "Valor que entrou na conta via PagSeguro (R$)",
-                                min_value=0.0, value=0.0, step=0.01,
-                                key=f"pagseguro_{venda_id_selecionada}_0"
+                            pass
+
+                    if cartoes_pag:
+                        for i_pag, c_pag in enumerate(cartoes_pag):
+                            label_pag = f"{c_pag['Máquina']} ({c_pag['Bandeira']}) em {c_pag['Parcelas']} — Passado: {formatar_moeda(float(c_pag['Valor']))}"
+                            v_pag = st.number_input(
+                                f"💳 {label_pag}",
+                                min_value=0.0,
+                                value=0.0,
+                                step=0.01,
+                                help="Informe o valor que entrou nesta máquina segundo o relatório PagSeguro. Deixe 0 se não souber.",
+                                key=f"pagseguro_{venda_id_selecionada}_{i_pag}"
                             )
+                            total_pagseguro += v_pag
+                        if len(cartoes_pag) > 1 and total_pagseguro > 0:
+                            st.caption(f"Total PagSeguro informado: **{formatar_moeda(total_pagseguro)}**")
                     else:
                         total_pagseguro = st.number_input(
                             "Valor que entrou na conta via PagSeguro (R$)",
