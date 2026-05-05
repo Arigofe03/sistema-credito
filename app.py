@@ -309,15 +309,15 @@ else:
                     loja_admin = st.session_state.loja_usuario
                     
                     if is_master and dash_loja != "Todas":
-                        q_vendas = "SELECT v.data_venda, u.loja, v.valor_venda, v.total_lucro, v.status, v.nome_maquina FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE u.loja = %s AND DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s"
+                        q_vendas = "SELECT v.data_venda, u.loja, v.valor_venda, v.total_lucro, v.status, v.nome_maquina, v.detalhes_cartoes FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE u.loja = %s AND DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s"
                         q_gastos = "SELECT data_gasto, loja, valor_gasto FROM gastos WHERE loja = %s AND DATE(data_gasto) >= %s AND DATE(data_gasto) <= %s"
                         params = (dash_loja, dash_ini, dash_fim)
                     elif is_master:
-                        q_vendas = "SELECT v.data_venda, u.loja, v.valor_venda, v.total_lucro, v.status, v.nome_maquina FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s"
+                        q_vendas = "SELECT v.data_venda, u.loja, v.valor_venda, v.total_lucro, v.status, v.nome_maquina, v.detalhes_cartoes FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s"
                         q_gastos = "SELECT data_gasto, loja, valor_gasto FROM gastos WHERE DATE(data_gasto) >= %s AND DATE(data_gasto) <= %s"
                         params = (dash_ini, dash_fim)
                     else:
-                        q_vendas = "SELECT v.data_venda, u.loja, v.valor_venda, v.total_lucro, v.status, v.nome_maquina FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE u.loja = %s AND DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s"
+                        q_vendas = "SELECT v.data_venda, u.loja, v.valor_venda, v.total_lucro, v.status, v.nome_maquina, v.detalhes_cartoes FROM vendas v JOIN usuarios u ON v.usuario_id = u.id WHERE u.loja = %s AND DATE(v.data_venda) >= %s AND DATE(v.data_venda) <= %s"
                         q_gastos = "SELECT data_gasto, loja, valor_gasto FROM gastos WHERE loja = %s AND DATE(data_gasto) >= %s AND DATE(data_gasto) <= %s"
                         params = (loja_admin, dash_ini, dash_fim)
                     
@@ -378,6 +378,41 @@ else:
                                     fig_bar_loja = px.bar(df_loja_lucro, x='loja', y='total_lucro', title='Lucro Bruto por Loja', color='loja', color_discrete_sequence=px.colors.qualitative.Pastel)
                                     fig_bar_loja.update_layout(yaxis_title="Lucro (R$)", separators=",.")
                                     st.plotly_chart(fig_bar_loja, use_container_width=True)
+
+                        st.write("### 🏧 Lucro por Máquina")
+                        lucro_por_maquina = {}
+                        for _, row_maq in df_fechadas.iterrows():
+                            lucro_row = float(row_maq['total_lucro']) if pd.notna(row_maq['total_lucro']) else 0.0
+                            maq_nome_raw = row_maq['nome_maquina']
+                            if maq_nome_raw != 'Múltiplas':
+                                maq_nome = maq_nome_raw or 'Desconhecida'
+                                lucro_por_maquina[maq_nome] = lucro_por_maquina.get(maq_nome, 0.0) + lucro_row
+                            else:
+                                det_json = row_maq['detalhes_cartoes']
+                                if pd.notna(det_json) and det_json:
+                                    try:
+                                        cartoes_maq = json.loads(det_json)
+                                        total_val_maq = sum(float(c['Valor']) for c in cartoes_maq)
+                                        if total_val_maq > 0:
+                                            for c_maq in cartoes_maq:
+                                                maq_nome = c_maq.get('Máquina', 'Desconhecida') or 'Desconhecida'
+                                                share_maq = float(c_maq['Valor']) / total_val_maq
+                                                lucro_por_maquina[maq_nome] = lucro_por_maquina.get(maq_nome, 0.0) + lucro_row * share_maq
+                                    except:
+                                        pass
+                        if lucro_por_maquina:
+                            df_lucro_maq = pd.DataFrame(list(lucro_por_maquina.items()), columns=['Máquina', 'Lucro'])
+                            df_lucro_maq = df_lucro_maq.sort_values('Lucro', ascending=False).reset_index(drop=True)
+                            col_maq1, col_maq2 = st.columns(2)
+                            with col_maq1:
+                                fig_lucro_maq = px.bar(df_lucro_maq, x='Máquina', y='Lucro', title='Lucro por Máquina', color='Máquina')
+                                fig_lucro_maq.update_layout(yaxis_title="Lucro (R$)", separators=",.")
+                                st.plotly_chart(fig_lucro_maq, use_container_width=True)
+                            with col_maq2:
+                                df_lucro_maq_disp = df_lucro_maq.copy()
+                                df_lucro_maq_disp['Lucro'] = df_lucro_maq_disp['Lucro'].apply(formatar_moeda)
+                                df_lucro_maq_disp.columns = ['Máquina', 'Lucro Bruto']
+                                st.dataframe(df_lucro_maq_disp, use_container_width=True, hide_index=True)
                 except Exception as e: pass
 
         # --- FLUXO DE CAIXA ---
@@ -542,29 +577,48 @@ else:
                     st.markdown(resumo_html)
                     st.write("---")
 
-                    # ✅ MELHORIA 4: Campo para informar o valor recebido via PagSeguro
-                    # O sistema usa o valor da PagSeguro para calcular o lucro real automaticamente,
-                    # eliminando a necessidade de Bia calcular manualmente.
                     st.write("#### 📲 Valor Recebido via PagSeguro (Opcional)")
                     st.info(
-                        "Se você já tem o valor exato que **entrou na conta pela PagSeguro**, informe abaixo. "
-                        "O sistema calculará o lucro real automaticamente, sem precisar de cálculo manual."
+                        "Se você já tem os valores que **entraram na conta pela PagSeguro**, informe abaixo **para cada cartão**. "
+                        "O sistema somará tudo e calculará o lucro real automaticamente."
                     )
-                    valor_pagseguro = st.number_input(
-                        "Valor que entrou na conta via PagSeguro (R$)",
-                        min_value=0.0,
-                        value=0.0,
-                        step=0.01,
-                        help="Informe o valor exato do relatório PagSeguro. Se não souber agora, deixe 0 e use o lucro sugerido acima.",
-                        key=f"pagseguro_{venda_id_selecionada}"
-                    )
+                    total_pagseguro = 0.0
+                    if pd.notna(detalhes_json) and detalhes_json != "":
+                        try:
+                            cartoes_pag = json.loads(detalhes_json)
+                            for i_pag, c_pag in enumerate(cartoes_pag):
+                                label_pag = f"{c_pag['Máquina']} ({c_pag['Bandeira']}) em {c_pag['Parcelas']} — Passado: {formatar_moeda(float(c_pag['Valor']))}"
+                                v_pag = st.number_input(
+                                    f"💳 {label_pag}",
+                                    min_value=0.0,
+                                    value=0.0,
+                                    step=0.01,
+                                    help="Informe o valor que entrou nesta máquina segundo o relatório PagSeguro. Deixe 0 se não souber.",
+                                    key=f"pagseguro_{venda_id_selecionada}_{i_pag}"
+                                )
+                                total_pagseguro += v_pag
+                            if len(cartoes_pag) > 1 and total_pagseguro > 0:
+                                st.caption(f"Total PagSeguro informado: **{formatar_moeda(total_pagseguro)}**")
+                        except:
+                            total_pagseguro = st.number_input(
+                                "Valor que entrou na conta via PagSeguro (R$)",
+                                min_value=0.0, value=0.0, step=0.01,
+                                key=f"pagseguro_{venda_id_selecionada}_0"
+                            )
+                    else:
+                        total_pagseguro = st.number_input(
+                            "Valor que entrou na conta via PagSeguro (R$)",
+                            min_value=0.0, value=0.0, step=0.01,
+                            key=f"pagseguro_{venda_id_selecionada}_0"
+                        )
 
-                    # Se informou o valor da PagSeguro, calcula o lucro real com base nele
+                    valor_pagseguro = total_pagseguro
+
                     if valor_pagseguro > 0:
                         lucro_calculado_pagseguro = valor_pagseguro - pix_raw
                         st.success(
                             f"✅ **Lucro calculado pela PagSeguro:** {formatar_moeda(lucro_calculado_pagseguro)} "
-                            f"(Entrou: {formatar_moeda(valor_pagseguro)} − Pago ao cliente: {formatar_moeda(pix_raw)})"
+                            f"(Entrou total: {formatar_moeda(valor_pagseguro)} − Pago ao cliente: {formatar_moeda(pix_raw)})"
                         )
                         lucro_para_confirmar = lucro_calculado_pagseguro
                     else:
@@ -605,6 +659,7 @@ else:
                                         'pix_raw': pix_raw,
                                         'valor_pagseguro': valor_pagseguro,
                                         'usuario': usuario_logado_nome,
+                                        'cartoes_json': detalhes_json,
                                     }
                                     st.rerun()
                                     
@@ -635,9 +690,21 @@ else:
                         vid_conf = dados_conf['venda_id']
 
                         if acao_conf == 'aprovar':
+                            cartoes_conf_str = ""
+                            cartoes_json_conf = dados_conf.get('cartoes_json', '')
+                            if cartoes_json_conf and cartoes_json_conf != "":
+                                try:
+                                    for c_conf in json.loads(cartoes_json_conf):
+                                        cartoes_conf_str += (
+                                            f"\n  - **{c_conf['Máquina']}** ({c_conf['Bandeira']}) "
+                                            f"em {c_conf['Parcelas']}: **{formatar_moeda(float(c_conf['Valor']))}**"
+                                        )
+                                except:
+                                    pass
                             st.warning(
                                 f"⚠️ **Confirmar aprovação da Venda ID {vid_conf}?**\n\n"
-                                f"Lucro a registrar: **{formatar_moeda(dados_conf['lucro_confirmado'])}** | "
+                                + (f"**Cartões utilizados:**{cartoes_conf_str}\n\n" if cartoes_conf_str else "")
+                                + f"Lucro a registrar: **{formatar_moeda(dados_conf['lucro_confirmado'])}** | "
                                 f"Conta: **{dados_conf['conta_saida']}**"
                             )
                         elif acao_conf == 'recusar':
