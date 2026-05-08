@@ -516,7 +516,17 @@ else:
                     st.dataframe(df_pend_display.drop(columns=['Valor Total_Raw', 'PIX_Raw', 'Detalhes JSON', 'Pagamentos JSON', 'Bonus_Raw', 'Usou_Fid']), use_container_width=True, hide_index=True)
                     st.divider()
                     
-                    venda_id_selecionada = st.selectbox("Selecione o ID da Venda para fechar:", df_pend['ID'].tolist())
+                    ids_pendentes = df_pend['ID'].tolist()
+                    idx_sel_fechamento = 0
+                    if st.session_state.get('venda_id_fechamento') in ids_pendentes:
+                        idx_sel_fechamento = ids_pendentes.index(st.session_state['venda_id_fechamento'])
+                    venda_id_selecionada = st.selectbox(
+                        "Selecione o ID da Venda para fechar:",
+                        ids_pendentes,
+                        index=idx_sel_fechamento,
+                        key="selectbox_fechamento_id"
+                    )
+                    st.session_state['venda_id_fechamento'] = venda_id_selecionada
                     venda_dados = df_pend[df_pend['ID'] == venda_id_selecionada].iloc[0]
                     venda_raw = float(venda_dados['Valor Total_Raw'])
                     pix_raw = float(venda_dados['PIX_Raw'])
@@ -1242,14 +1252,185 @@ else:
         with aba_venda:
             try:
                 conn = conectar_banco()
-                df_rec = pd.read_sql_query("SELECT id as \"ID\", to_char(data_venda, 'DD/MM/YYYY') as \"Data\", cliente_nome as \"Cliente\", valor_venda as \"Valor\", motivo_recusa as \"Motivo da Recusa\" FROM vendas WHERE usuario_id = %s AND status = 'Recusada' ORDER BY id DESC", conn, params=(st.session_state.id_usuario,))
+                df_rec = pd.read_sql_query(
+                    "SELECT id as \"ID\", to_char(data_venda, 'DD/MM/YYYY') as \"Data\", cliente_nome as \"Cliente\", "
+                    "cliente_cpf as \"CPF\", valor_venda as \"Valor\", valor_pix_cliente as \"ValorCliente\", "
+                    "motivo_recusa as \"Motivo da Recusa\", detalhes_cartoes as \"DetalhesCartoes\", "
+                    "detalhes_pagamentos as \"DetalhesPagamentos\", bonus_fidelidade as \"Bonus\", "
+                    "usou_fidelidade as \"UsouFid\", observacoes as \"Obs\" "
+                    "FROM vendas WHERE usuario_id = %s AND status = 'Recusada' ORDER BY id DESC",
+                    conn, params=(st.session_state.id_usuario,))
                 if not df_rec.empty:
-                    df_rec_disp = df_rec.copy()
+                    df_rec_disp = df_rec[['ID', 'Data', 'Cliente', 'Valor', 'Motivo da Recusa']].copy()
                     df_rec_disp['Valor'] = df_rec_disp['Valor'].apply(formatar_moeda)
                     st.error("⚠️ **Vendas RECUSADAS:** As propostas abaixo foram recusadas pelo caixa central:")
                     st.dataframe(df_rec_disp, use_container_width=True, hide_index=True)
+
+                    col_sel_rec, col_btn_rec = st.columns([3, 1])
+                    with col_sel_rec:
+                        id_editar_rec = st.selectbox(
+                            "Corrigir e reenviar qual venda?",
+                            df_rec['ID'].tolist(),
+                            format_func=lambda x: f"ID {x} — {df_rec[df_rec['ID']==x]['Cliente'].values[0]}",
+                            key="sel_id_recusada"
+                        )
+                    with col_btn_rec:
+                        st.write("")
+                        if st.button("✏️ Editar esta venda", key="btn_abrir_editar_recusada"):
+                            st.session_state['editando_recusada_id'] = id_editar_rec
+                            st.rerun()
                 conn.close()
             except: pass
+
+            # --- FORMULÁRIO DE EDIÇÃO DE VENDA RECUSADA ---
+            editando_id = st.session_state.get('editando_recusada_id')
+            if editando_id and not df_rec.empty and editando_id in df_rec['ID'].tolist():
+                row_rec = df_rec[df_rec['ID'] == editando_id].iloc[0]
+                st.divider()
+                st.warning(f"✏️ **Editando Venda ID {editando_id}** — Motivo da recusa: *{row_rec['Motivo da Recusa']}*")
+
+                erc = f"edit_{editando_id}"
+                try:
+                    cartoes_rec = json.loads(row_rec['DetalhesCartoes']) if pd.notna(row_rec['DetalhesCartoes']) and row_rec['DetalhesCartoes'] else []
+                except: cartoes_rec = []
+                try:
+                    pagamentos_rec = json.loads(row_rec['DetalhesPagamentos']) if pd.notna(row_rec['DetalhesPagamentos']) and row_rec['DetalhesPagamentos'] else []
+                except: pagamentos_rec = []
+
+                st.write("### 1. Identificação do Cliente")
+                e_cpf = st.text_input("CPF do Cliente (opcional)", value=row_rec['CPF'] or "", key=f"e_cpf_{erc}")
+                e_nome = st.text_input("Nome Completo *", value=row_rec['Cliente'], key=f"e_nome_{erc}")
+
+                st.write("---")
+                st.write("### 2. Cartões e Valores")
+                lista_maquinas_edit = ["Selecione..."] + obter_lista_maquinas_rapido()
+                qtd_c_edit = st.number_input("Quantos cartões?", min_value=1, max_value=50,
+                                              value=max(1, len(cartoes_rec)), step=1, key=f"e_qtd_{erc}")
+                e_cartoes = []
+                e_total_cartoes = 0.0
+                for i in range(int(qtd_c_edit)):
+                    c_pre = cartoes_rec[i] if i < len(cartoes_rec) else {}
+                    st.caption(f"**Cartão {i+1}**")
+                    cc1, cc2, cc3, cc4 = st.columns(4)
+                    maq_idx = lista_maquinas_edit.index(c_pre.get('Máquina', 'Selecione...')) if c_pre.get('Máquina') in lista_maquinas_edit else 0
+                    band_idx = LISTA_BANDEIRAS_ATENDENTE.index(c_pre.get('Bandeira', LISTA_BANDEIRAS_ATENDENTE[0])) if c_pre.get('Bandeira') in LISTA_BANDEIRAS_ATENDENTE else 0
+                    parc_idx = LISTA_PARCELAS.index(c_pre.get('Parcelas', LISTA_PARCELAS[0])) if c_pre.get('Parcelas') in LISTA_PARCELAS else 0
+                    with cc1: e_maq = st.selectbox("Máquina *", lista_maquinas_edit, index=maq_idx, key=f"e_maq_{i}_{erc}")
+                    with cc2: e_band = st.selectbox("Bandeira *", LISTA_BANDEIRAS_ATENDENTE, index=band_idx, key=f"e_band_{i}_{erc}")
+                    with cc3: e_parc = st.selectbox("Parcelas", LISTA_PARCELAS, index=parc_idx, key=f"e_parc_{i}_{erc}")
+                    with cc4: e_val = st.number_input("Valor (R$) *", min_value=0.0, value=float(c_pre.get('Valor', 0.0)), key=f"e_val_{i}_{erc}")
+                    e_total_cartoes += e_val
+                    e_cartoes.append({"Máquina": e_maq, "Bandeira": e_band, "Parcelas": e_parc, "Valor": e_val})
+
+                st.write("---")
+                st.write("#### 3. Repasse ao Cliente")
+                e_valor_cliente = st.number_input("Valor a transferir ao cliente (R$) *", min_value=0.0,
+                                                   value=float(row_rec['ValorCliente']), step=10.0, key=f"e_vcli_{erc}")
+
+                st.write("---")
+                st.write("#### 🎁 Bônus Fidelidade")
+                e_fid_opcoes = ["Não", "Sim, somar o Bônus ao valor a transferir", "Sim, já abateu o valor no cartão passado"]
+                e_fid_idx = 1 if row_rec['UsouFid'] else 0
+                e_fid = st.radio("Utilizou Cartão Fidelidade?", e_fid_opcoes, index=e_fid_idx, key=f"e_fid_{erc}")
+                e_bonus = 0.0
+                if e_fid != "Não":
+                    e_bonus = st.number_input("Valor do Bônus (R$)", min_value=0.0,
+                                               value=float(row_rec['Bonus']) if pd.notna(row_rec['Bonus']) else 0.0,
+                                               step=5.0, key=f"e_bonus_{erc}")
+                e_alvo = e_valor_cliente + (e_bonus if "somar" in e_fid else 0)
+                st.info(f"Total nos Cartões: **{formatar_moeda(e_total_cartoes)}** | Bônus: **{formatar_moeda(e_bonus)}** | **LÍQUIDO A PAGAR: {formatar_moeda(e_alvo)}**")
+
+                st.write("---")
+                st.write("### 4. Distribuição nas Contas do Cliente")
+                qtd_pag_edit = st.number_input("Em quantas contas?", min_value=1, max_value=10,
+                                                value=max(1, len(pagamentos_rec)), step=1, key=f"e_qtdpag_{erc}")
+                e_pagamentos = []
+                e_soma_dist = 0.0
+                for i in range(int(qtd_pag_edit)):
+                    p_pre = pagamentos_rec[i] if i < len(pagamentos_rec) else {}
+                    st.markdown(f"**Recebedor {i+1}**")
+                    tipo_opts = ["PIX", "Conta Corrente", "Conta Poupança"]
+                    tipo_idx = tipo_opts.index(p_pre.get('Tipo', 'PIX')) if p_pre.get('Tipo') in tipo_opts else 0
+                    cpt, cpv = st.columns(2)
+                    e_tipo = cpt.selectbox("Modalidade *", tipo_opts, index=tipo_idx, key=f"e_tpag_{i}_{erc}")
+                    e_vpag = cpv.number_input("Valor (R$) *", min_value=0.0, value=float(p_pre.get('Valor', 0.0)), key=f"e_vpag_{i}_{erc}")
+                    e_soma_dist += e_vpag
+                    if e_tipo == "PIX":
+                        e_chave = st.text_input("Chave PIX *", value=p_pre.get('Chave', ''), key=f"e_chave_{i}_{erc}")
+                        e_pagamentos.append({"Tipo": e_tipo, "Chave": e_chave, "Valor": e_vpag})
+                    else:
+                        cb, ca, cc_ = st.columns(3)
+                        e_banco = cb.text_input("Banco *", value=p_pre.get('Banco', ''), key=f"e_banco_{i}_{erc}")
+                        e_ag = ca.text_input("Agência *", value=p_pre.get('Agência', ''), key=f"e_ag_{i}_{erc}")
+                        e_conta = cc_.text_input("Conta *", value=p_pre.get('Conta', ''), key=f"e_conta_{i}_{erc}")
+                        e_pagamentos.append({"Tipo": e_tipo, "Banco": e_banco, "Agência": e_ag, "Conta": e_conta, "Valor": e_vpag})
+
+                e_falta = e_alvo - e_soma_dist
+                if e_alvo > 0:
+                    if e_falta > 0.01: st.warning(f"⚠️ Falta distribuir **{formatar_moeda(e_falta)}**")
+                    elif e_falta < -0.01: st.error(f"🚨 Distribuindo **{formatar_moeda(abs(e_falta))}** a MAIS!")
+                    else: st.success("✅ 100% Distribuído!")
+
+                st.write("---")
+                e_obs = st.text_area("Observações", value=row_rec['Obs'] or "", key=f"e_obs_{erc}")
+
+                col_env, col_cancel_edit = st.columns(2)
+                with col_env:
+                    if st.button("🔁 Reenviar para o Financeiro", type="primary", key=f"btn_reenviar_{erc}"):
+                        e_cartoes_validos = [c for c in e_cartoes if c["Máquina"] != "Selecione..." and c["Bandeira"] != "Selecione..." and c["Valor"] > 0]
+                        e_pag_validos = all(
+                            p["Valor"] > 0 and (p["Tipo"] != "PIX" or p.get("Chave", "").strip())
+                            and (p["Tipo"] == "PIX" or (p.get("Banco","").strip() and p.get("Agência","").strip() and p.get("Conta","").strip()))
+                            for p in e_pagamentos
+                        )
+                        if e_nome.strip() == "":
+                            st.error("Preencha o Nome do cliente.")
+                        elif len(e_cartoes_validos) < int(qtd_c_edit):
+                            st.error("Preencha todos os cartões.")
+                        elif not e_pag_validos:
+                            st.error("Preencha todos os dados bancários.")
+                        elif abs(e_falta) > 0.01:
+                            st.error("Distribua exatamente o valor líquido.")
+                        else:
+                            try:
+                                maq_p = "Múltiplas" if len(e_cartoes_validos) > 1 else e_cartoes_validos[0]["Máquina"]
+                                band_p = "Múltiplas" if len(e_cartoes_validos) > 1 else e_cartoes_validos[0]["Bandeira"]
+                                if len(e_pagamentos) > 1:
+                                    chave_res = "Múltiplas Contas"
+                                else:
+                                    p0e = e_pagamentos[0]
+                                    chave_res = f"PIX: {p0e['Chave']}" if p0e["Tipo"] == "PIX" else f"{p0e['Banco']} - Ag:{p0e['Agência']} Cc:{p0e['Conta']}"
+                                conn2 = conectar_banco(); cur2 = conn2.cursor()
+                                cur2.execute("""
+                                    UPDATE vendas SET
+                                        cliente_nome=%s, cliente_cpf=%s, chave_pix_cliente=%s,
+                                        nome_maquina=%s, bandeira_cartao=%s, parcelas=%s,
+                                        valor_venda=%s, valor_pix_cliente=%s, observacoes=%s,
+                                        detalhes_cartoes=%s, detalhes_pagamentos=%s,
+                                        bonus_fidelidade=%s, usou_fidelidade=%s,
+                                        status='Pendente', motivo_recusa=NULL,
+                                        data_venda=CURRENT_TIMESTAMP
+                                    WHERE id=%s
+                                """, (
+                                    e_nome, e_cpf if e_cpf.strip() else None, chave_res,
+                                    maq_p, band_p, e_cartoes_validos[0]["Parcelas"],
+                                    e_total_cartoes, e_soma_dist, e_obs,
+                                    json.dumps(e_cartoes_validos), json.dumps(e_pagamentos),
+                                    e_bonus, (e_fid != "Não"),
+                                    editando_id
+                                ))
+                                conn2.commit(); conn2.close()
+                                del st.session_state['editando_recusada_id']
+                                st.success("✅ Venda corrigida e reenviada para o financeiro!")
+                                import time as _t; _t.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao atualizar: {e}")
+                with col_cancel_edit:
+                    if st.button("❌ Cancelar edição", key=f"btn_cancel_edit_{erc}"):
+                        del st.session_state['editando_recusada_id']
+                        st.rerun()
+                st.divider()
             
             st.write("### 1. Identificação do Cliente")
             rc = st.session_state.form_reset_counter
